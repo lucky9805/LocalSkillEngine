@@ -4,6 +4,8 @@
 import asyncio
 import json
 import click
+import os
+import signal
 import sys
 import uvicorn
 from pathlib import Path
@@ -475,38 +477,164 @@ def execute(name, parameters, timeout, format):
     click.echo("\n" + "=" * 80)
 
 
-@cli.command()
+def get_pid_file():
+    """获取 PID 文件路径"""
+    pid_dir = Path.home() / ".skill-service"
+    pid_dir.mkdir(parents=True, exist_ok=True)
+    return pid_dir / "server.pid"
+
+
+@cli.group(invoke_without_command=True)
 @click.option('--host', '-h', type=str, default=None, help='主机地址')
 @click.option('--port', '-p', type=int, default=None, help='端口号')
 @click.option('--reload', is_flag=True, help='自动重载')
-def serve(host, port, reload):
-    """启动 API 服务"""
-    settings = get_settings()
+@click.pass_context
+def serve(ctx, host, port, reload):
+    """启动或管理 API 服务"""
+    if ctx.invoked_subcommand is None:
+        # 没有子命令，执行启动逻辑
+        settings = get_settings()
 
-    server_host = host or settings.server_host
-    server_port = port or settings.server_port
+        server_host = host or settings.server_host
+        server_port = port or settings.server_port
 
-    click.echo("\n🌐 启动 Skill Service API...")
-    click.echo("=" * 80)
-    click.echo(f"地址: http://{server_host}:{server_port}")
-    click.echo(f"文档: http://{server_host}:{server_port}/docs")
-    click.echo(f"ReDoc: http://{server_host}:{server_port}/redoc")
-    click.echo("=" * 80)
-    click.echo("")
+        # 检查端口是否被占用
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind((server_host, server_port))
+        except OSError:
+            click.echo(f"\n❌ 端口 {server_port} 已被占用")
+            click.echo(f"   请检查是否有其他服务正在使用该端口：")
+            click.echo(f"   lsof -i :{server_port}")
+            click.echo(f"   或先停止已有服务：")
+            click.echo(f"   skill-service serve stop")
+            sys.exit(1)
+        finally:
+            sock.close()
 
+        # 检查是否已有服务在运行
+        pid_file = get_pid_file()
+        if pid_file.exists():
+            try:
+                old_pid = int(pid_file.read_text().strip())
+                os.kill(old_pid, 0)
+                click.echo(f"\n⚠️  已有一个服务在运行 (PID: {old_pid})")
+                click.echo("   如需重启，请先停止：skill-service serve stop")
+                sys.exit(1)
+            except (ValueError, ProcessLookupError):
+                pid_file.unlink()
+
+        # 写入 PID 文件
+        pid_file.write_text(str(os.getpid()))
+
+        click.echo("\n🌐 启动 Skill Service API...")
+        click.echo("=" * 80)
+        click.echo(f"地址: http://{server_host}:{server_port}")
+        click.echo(f"文档: http://{server_host}:{server_port}/docs")
+        click.echo(f"ReDoc: http://{server_host}:{server_port}/redoc")
+        click.echo(f"PID 文件: {pid_file}")
+        click.echo(f"停止服务: skill-service serve stop")
+        click.echo("=" * 80)
+        click.echo("")
+
+        try:
+            uvicorn.run(
+                "skill_service.api.server:app",
+                host=server_host,
+                port=server_port,
+                reload=reload,
+                log_level=settings.log_level.lower()
+            )
+        except KeyboardInterrupt:
+            click.echo("\n\n👋 服务已停止")
+        except Exception as e:
+            click.echo(f"\n❌ 启动失败: {e}")
+            sys.exit(1)
+        finally:
+            # 退出时清理 PID 文件
+            if pid_file.exists():
+                pid_file.unlink()
+
+
+@serve.command(name='stop')
+@click.option('--port', '-p', type=int, default=None, help='指定要停止的服务端口（当 PID 文件不存在时使用）')
+def serve_stop(port):
+    """停止正在运行的 API 服务"""
+    import subprocess
+
+    pid_file = get_pid_file()
+    pid = None
+
+    # 方式一：通过 PID 文件查找
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+        except (ValueError, OSError):
+            pid_file.unlink()
+            pid = None
+
+    if pid is not None:
+        # 验证进程是否还活着
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            click.echo("⚠️  PID 文件存在但进程已不存在，清理 PID 文件")
+            pid_file.unlink()
+            pid = None
+        except PermissionError:
+            click.echo(f"❌ 没有权限停止进程 (PID: {pid})")
+            return
+
+    # 方式二：通过端口查找
+    if pid is None:
+        target_port = port or 8000
+        try:
+            result = subprocess.run(
+                ['lsof', '-ti', f':{target_port}', '-sTCP:LISTEN'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                pids = result.stdout.strip().split('\n')
+                pid = int(pids[0])
+                click.echo(f"📋 通过端口 {target_port} 找到进程 (PID: {pid})")
+            else:
+                click.echo(f"❌ 未找到运行中的服务（端口 {target_port} 未被占用）")
+                return
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            click.echo(f"❌ 无法通过端口查找进程（PID 文件也不存在）")
+            click.echo("   请手动查找并停止: ps aux | grep skill-service")
+            return
+
+    # 发送 SIGTERM 信号
     try:
-        uvicorn.run(
-            "skill_service.api.server:app",
-            host=server_host,
-            port=server_port,
-            reload=reload,
-            log_level=settings.log_level.lower()
-        )
-    except KeyboardInterrupt:
-        click.echo("\n\n👋 服务已停止")
-    except Exception as e:
-        click.echo(f"\n❌ 启动失败: {e}")
-        sys.exit(1)
+        os.kill(pid, signal.SIGTERM)
+        click.echo(f"🛑 已发送停止信号给进程 (PID: {pid})")
+        click.echo("等待服务关闭...")
+    except OSError as e:
+        click.echo(f"❌ 停止失败: {e}")
+        return
+
+    # 等待进程退出（最多 5 秒）
+    import time
+    for _ in range(10):
+        time.sleep(0.5)
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            # 清理 PID 文件
+            if pid_file.exists():
+                pid_file.unlink()
+            click.echo("✅ 服务已停止")
+            return
+
+    # 进程未响应，尝试 SIGKILL
+    click.echo("⚠️  服务未响应，强制终止...")
+    try:
+        os.kill(pid, signal.SIGKILL)
+        click.echo("✅ 服务已强制停止")
+    except OSError as e:
+        click.echo(f"❌ 强制停止失败: {e}")
 
 
 @cli.command()
