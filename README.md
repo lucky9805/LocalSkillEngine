@@ -19,7 +19,7 @@
 
 ```bash
 # 克隆项目
-git clone https://github.com/yourusername/skill-service.git
+git clone https://github.com/lucky9805/LocalSkillEngine.git
 cd skill-service
 
 # 创建虚拟环境
@@ -276,9 +276,9 @@ MIT License - 详见 LICENSE 文件
 
 ## 📞 联系方式
 
-- 作者: Your Name
-- 邮箱: your.email@example.com
-- 项目地址: https://github.com/yourusername/skill-service
+- 作者: lucky9805
+- 邮箱: lucky9805@163.com
+- 项目地址: https://github.com/lucky9805/LocalSkillEngine.git
 
 ---
 
