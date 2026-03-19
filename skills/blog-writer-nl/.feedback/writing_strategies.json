@@ -1,0 +1,62 @@
+[
+  {
+    "timestamp": "2026-03-19T17:39:18.707257",
+    "metrics": {
+      "total_executions": 1,
+      "success_rate": 1.0,
+      "avg_word_count_accuracy": 0.61,
+      "avg_execution_time_ms": 2,
+      "user_satisfaction": 0.0,
+      "common_errors": [],
+      "improvement_suggestions": [
+        "字数控制精度不足 (61.0%)，建议优化字数计算和扩展算法"
+      ]
+    },
+    "version": "1.0.0"
+  },
+  {
+    "timestamp": "2026-03-19T17:39:27.494842",
+    "metrics": {
+      "total_executions": 2,
+      "success_rate": 1.0,
+      "avg_word_count_accuracy": 0.8,
+      "avg_execution_time_ms": 4,
+      "user_satisfaction": 1.0,
+      "common_errors": [],
+      "improvement_suggestions": [
+        "字数控制精度不足 (80.5%)，建议优化字数计算和扩展算法"
+      ]
+    },
+    "version": "1.0.0"
+  },
+  {
+    "timestamp": "2026-03-19T17:39:27.499868",
+    "metrics": {
+      "total_executions": 3,
+      "success_rate": 1.0,
+      "avg_word_count_accuracy": 0.63,
+      "avg_execution_time_ms": 3,
+      "user_satisfaction": 1.0,
+      "common_errors": [],
+      "improvement_suggestions": [
+        "字数控制精度不足 (63.0%)，建议优化字数计算和扩展算法"
+      ]
+    },
+    "version": "1.0.0"
+  },
+  {
+    "timestamp": "2026-03-19T17:39:27.504852",
+    "metrics": {
+      "total_executions": 4,
+      "success_rate": 1.0,
+      "avg_word_count_accuracy": 0.68,
+      "avg_execution_time_ms": 3,
+      "user_satisfaction": 1.0,
+      "common_errors": [],
+      "improvement_suggestions": [
+        "字数控制精度不足 (67.5%)，建议优化字数计算和扩展算法"
+      ]
+    },
+    "version": "1.0.0"
+  }
+]
