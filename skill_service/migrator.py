@@ -115,6 +115,11 @@ class SkillMigrator:
                 shutil.rmtree(target_path)
             
             shutil.copytree(source_dir, target_path)
+
+            # 如果指定了新名称，同步更新 SKILL.md 中的 name 字段
+            skill_md_path = target_path / "SKILL.md"
+            if skill_md_path.exists() and skill_name and skill_name != source_dir.name:
+                self._update_skill_name_in_md(skill_md_path, target_name)
             
             # 验证复制后的 skill
             is_valid, errors = validate_skill_directory(target_path)
@@ -402,6 +407,33 @@ class SkillMigrator:
         except Exception as e:
             logger.warning(f"解析 SKILL.md 失败: {e}")
             return None, {}
+
+    def _update_skill_name_in_md(self, skill_md_path: Path, new_name: str) -> None:
+        """
+        更新 SKILL.md 中的 name 字段，使其与目录名保持一致
+
+        Args:
+            skill_md_path: SKILL.md 路径
+            new_name: 新的 skill 名称
+        """
+        try:
+            content = skill_md_path.read_text(encoding='utf-8')
+            if not content.startswith('---'):
+                return
+
+            parts = content.split('---', 2)
+            if len(parts) < 3:
+                return
+
+            frontmatter = yaml.safe_load(parts[1]) or {}
+            frontmatter['name'] = new_name
+
+            new_fm = yaml.dump(frontmatter, allow_unicode=True, default_flow_style=False).strip()
+            new_content = f"---\n{new_fm}\n---{parts[2]}"
+            skill_md_path.write_text(new_content, encoding='utf-8')
+            logger.info(f"已更新 SKILL.md 中的 name 为: {new_name}")
+        except Exception as e:
+            logger.warning(f"更新 SKILL.md name 失败: {e}")
 
 
 def migrate_skill(

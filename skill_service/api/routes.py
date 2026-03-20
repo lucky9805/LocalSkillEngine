@@ -1,6 +1,7 @@
 """
 API 路由模块
 """
+from pathlib import Path
 from fastapi import APIRouter, HTTPException, status
 from typing import List
 
@@ -19,7 +20,10 @@ from skill_service.api.schemas import (
     ChatExecutionResult,
     ImportFromDirectoryRequest,
     ImportFromGitRequest,
-    ImportResponse
+    ImportResponse,
+    InstallRequest,
+    InstallFromTextRequest,
+    UninstallResponse,
 )
 from skill_service.runner import SkillRunner
 from skill_service.models import SkillExecutionRequest as ModelExecutionRequest
@@ -385,15 +389,15 @@ async def import_from_directory(request: ImportFromDirectoryRequest) -> ImportRe
 async def import_from_git(request: ImportFromGitRequest) -> ImportResponse:
     """
     从 Git 仓库导入 skill
-    
+
     Args:
         request: 导入请求
-        
+
     Returns:
         导入结果
     """
     from skill_service.migrator import SkillMigrator
-    
+
     try:
         migrator = SkillMigrator()
         result = migrator.migrate_from_git(
@@ -402,11 +406,11 @@ async def import_from_git(request: ImportFromGitRequest) -> ImportResponse:
             subdir=request.subdir,
             overwrite=request.overwrite
         )
-        
+
         # 重新加载 skills
         if result.success:
             runner.reload_skills()
-        
+
         return ImportResponse(
             success=result.success,
             skill_name=result.skill_name,
@@ -415,10 +419,236 @@ async def import_from_git(request: ImportFromGitRequest) -> ImportResponse:
             warnings=result.warnings,
             errors=result.errors
         )
-        
+
     except Exception as e:
         logger.error(f"从 Git 导入 skill 失败: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"导入失败: {str(e)}"
+        )
+
+
+@router.post(
+    "/install",
+    response_model=ImportResponse,
+    summary="安装 Skill",
+    description="统一安装接口：自动识别 Git URL / 本地路径 / ZIP 文件"
+)
+async def install_skill(request: InstallRequest) -> ImportResponse:
+    """
+    统一安装 skill 接口
+
+    自动识别来源类型：
+    - Git URL (http/https/git@)
+    - 本地目录路径
+    - ZIP 文件路径
+
+    Args:
+        request: 安装请求
+
+    Returns:
+        安装结果
+    """
+    from skill_service.migrator import migrate_skill
+
+    try:
+        result = migrate_skill(
+            source=request.source,
+            name=request.skill_name,
+            overwrite=request.overwrite,
+            subdir=request.subdir
+        )
+
+        if result.success:
+            runner.reload_skills()
+
+        return ImportResponse(
+            success=result.success,
+            skill_name=result.skill_name,
+            target_path=str(result.target_path) if result.target_path else None,
+            message=result.message,
+            warnings=result.warnings,
+            errors=result.errors
+        )
+
+    except Exception as e:
+        logger.error(f"安装 skill 失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"安装失败: {str(e)}"
+        )
+
+
+@router.post(
+    "/install/text",
+    response_model=ImportResponse,
+    summary="从文本安装 Skill",
+    description="将 SKILL.md 文本内容直接安装为 skill"
+)
+async def install_skill_from_text(request: InstallFromTextRequest) -> ImportResponse:
+    """
+    从 SKILL.md 文本内容安装 skill
+
+    适合分享安装提示词的场景：将别人提供的 SKILL.md 内容
+    直接 POST 过来即可完成安装。
+
+    Args:
+        request: 包含 SKILL.md 内容的安装请求
+
+    Returns:
+        安装结果
+    """
+    import shutil
+    import yaml
+    import re
+    from skill_service.config import get_settings
+    from skill_service.utils.validator import validate_skill_directory
+
+    try:
+        content = request.content.strip()
+        if not content:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="content 不能为空"
+            )
+
+        # 解析 skill 名称
+        skill_name = request.skill_name
+        if not skill_name:
+            try:
+                if content.startswith('---'):
+                    parts = content.split('---', 2)
+                    if len(parts) >= 3:
+                        fm = yaml.safe_load(parts[1])
+                        if fm and fm.get('name'):
+                            skill_name = fm['name']
+            except Exception:
+                pass
+
+        if not skill_name:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="无法从 SKILL.md 中提取 skill 名称，请在请求中指定 skill_name"
+            )
+
+        settings = get_settings()
+        skills_dir = Path(settings.skills_directory)
+        target_path = skills_dir / skill_name
+
+        if target_path.exists():
+            if not request.overwrite:
+                return ImportResponse(
+                    success=False,
+                    skill_name=skill_name,
+                    target_path=str(target_path),
+                    message=f"Skill '{skill_name}' 已存在，设置 overwrite=true 覆盖"
+                )
+            shutil.rmtree(target_path)
+
+        # 创建目录结构
+        target_path.mkdir(parents=True)
+        scripts_dir = target_path / 'scripts'
+        scripts_dir.mkdir()
+
+        # 写入 SKILL.md
+        (target_path / 'SKILL.md').write_text(content, encoding='utf-8')
+
+        # 提取脚本代码块
+        named_pattern = re.compile(
+            r'###\s+(?:scripts/)?(\w+\.py)\s*\n```(?:python|py)?\s*\n(.*?)```',
+            re.DOTALL
+        )
+        found_named = False
+        for match in named_pattern.finditer(content):
+            filename, code = match.group(1), match.group(2)
+            (scripts_dir / filename).write_text(code, encoding='utf-8')
+            found_named = True
+
+        if not found_named:
+            generic_pattern = re.compile(r'```(?:python|py)\s*\n(.*?)```', re.DOTALL)
+            match = generic_pattern.search(content)
+            if match and 'def execute' in match.group(1):
+                (scripts_dir / 'main.py').write_text(match.group(1), encoding='utf-8')
+
+        # 验证
+        is_valid, errors = validate_skill_directory(target_path)
+        if not is_valid:
+            shutil.rmtree(target_path)
+            return ImportResponse(
+                success=False,
+                skill_name=skill_name,
+                message="Skill 内容验证失败",
+                errors=errors
+            )
+
+        runner.reload_skills()
+
+        warnings = []
+        main_py = scripts_dir / 'main.py'
+        if not main_py.exists() or main_py.stat().st_size == 0:
+            warnings.append("SKILL.md 中未找到可执行脚本，请手动创建 scripts/main.py")
+
+        return ImportResponse(
+            success=True,
+            skill_name=skill_name,
+            target_path=str(target_path),
+            message=f"Skill '{skill_name}' 安装成功",
+            warnings=warnings
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"从文本安装 skill 失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"安装失败: {str(e)}"
+        )
+
+
+@router.delete(
+    "/skills/{skill_name}",
+    response_model=UninstallResponse,
+    summary="卸载 Skill",
+    description="删除已安装的 skill"
+)
+async def uninstall_skill(skill_name: str) -> UninstallResponse:
+    """
+    卸载（删除）已安装的 skill
+
+    Args:
+        skill_name: 要卸载的 skill 名称
+
+    Returns:
+        卸载结果
+    """
+    import shutil
+    from skill_service.config import get_settings
+
+    try:
+        settings = get_settings()
+        skill_path = Path(settings.skills_directory) / skill_name
+
+        if not skill_path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Skill '{skill_name}' 不存在"
+            )
+
+        shutil.rmtree(skill_path)
+        runner.reload_skills()
+
+        return UninstallResponse(
+            success=True,
+            skill_name=skill_name,
+            message=f"Skill '{skill_name}' 已卸载"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"卸载 skill 失败 {skill_name}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"卸载失败: {str(e)}"
         )

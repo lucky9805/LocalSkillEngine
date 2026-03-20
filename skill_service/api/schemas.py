@@ -182,3 +182,44 @@ class ChatResponse(BaseModel):
     execution: Optional[ChatExecutionResult] = Field(None, description="执行结果（如果选择了 skill）")
     error: Optional[str] = Field(None, description="错误信息")
     timestamp: datetime = Field(default_factory=datetime.now, description="响应时间")
+
+
+class InstallRequest(BaseModel):
+    """统一安装 skill 请求"""
+    source: str = Field(..., description="来源：Git URL / 本地路径 / ZIP 路径")
+    skill_name: Optional[str] = Field(None, description="安装后的 skill 名称（默认自动检测）")
+    subdir: Optional[str] = Field(None, description="子目录（用于 Git/ZIP 中指定 skill 位置）")
+    overwrite: bool = Field(False, description="是否覆盖已存在的同名 skill")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "source": "https://github.com/user/my-skill.git",
+                "skill_name": None,
+                "subdir": None,
+                "overwrite": False
+            }
+        }
+
+
+class InstallFromTextRequest(BaseModel):
+    """从文本内容安装 skill 请求"""
+    content: str = Field(..., description="SKILL.md 的完整内容（含 frontmatter）")
+    skill_name: Optional[str] = Field(None, description="skill 名称，不指定则从 frontmatter 读取")
+    overwrite: bool = Field(False, description="是否覆盖已存在的同名 skill")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "content": "---\nname: my-skill\ndescription: A demo skill\n---\n\n# My Skill\n...",
+                "skill_name": None,
+                "overwrite": False
+            }
+        }
+
+
+class UninstallResponse(BaseModel):
+    """卸载响应"""
+    success: bool = Field(..., description="是否成功")
+    skill_name: str = Field(..., description="被卸载的 skill 名称")
+    message: str = Field(..., description="结果消息")

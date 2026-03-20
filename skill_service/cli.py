@@ -1370,6 +1370,281 @@ def import_list_source(source_dir):
         click.echo(f"   skill-service import from {skill['path']} --name {skill['name']}")
 
 
+@cli.command()
+@click.argument('source')
+@click.option('--name', '-n', type=str, default=None, help='安装后的 skill 名称（默认自动检测）')
+@click.option('--subdir', '-s', type=str, default=None, help='子目录（用于 Git/ZIP，指定 skill 在其中的位置）')
+@click.option('--overwrite', '-o', is_flag=True, help='覆盖已存在的同名 skill')
+def install(source, name, subdir, overwrite):
+    """安装 skill
+
+    SOURCE 可以是：
+
+    \b
+    - Git 仓库地址:  https://github.com/user/repo.git
+    - 本地目录路径:  ./my-skill  或  /path/to/skill
+    - ZIP 文件路径:  ./skill.zip
+
+    示例：
+
+    \b
+        skill-service install https://github.com/user/my-skill.git
+        skill-service install ./my-skill --name custom-name
+        skill-service install ./skills.zip --subdir calculator
+    """
+    from skill_service.migrator import migrate_skill
+
+    click.echo(f"\n📦 安装 skill: {source}")
+    click.echo("=" * 80)
+
+    # 自动识别类型并给出提示
+    if source.startswith(('http://', 'https://', 'git@')) or source.endswith('.git'):
+        click.echo("来源类型: Git 仓库")
+    elif source.endswith('.zip'):
+        click.echo("来源类型: ZIP 文件")
+    else:
+        click.echo("来源类型: 本地目录")
+
+    click.echo("")
+
+    with click.progressbar(length=3, label='安装中', show_eta=False) as bar:
+        # 执行安装
+        result = migrate_skill(
+            source=source,
+            name=name,
+            overwrite=overwrite,
+            subdir=subdir
+        )
+        bar.update(2)
+
+        # 安装成功后热加载
+        if result.success:
+            get_runner().reload_skills()
+        bar.update(1)
+
+    click.echo("")
+
+    if result.success:
+        click.echo(f"✅ 安装成功!")
+        click.echo(f"   名称: {result.skill_name}")
+        click.echo(f"   路径: {result.target_path}")
+
+        if result.warnings:
+            click.echo(f"\n⚠️  警告:")
+            for w in result.warnings:
+                click.echo(f"   - {w}")
+
+        click.echo(f"\n📝 使用方式:")
+        click.echo(f"   skill-service run {result.skill_name}")
+        click.echo(f"   skill-service info {result.skill_name}")
+    else:
+        click.echo(f"❌ 安装失败: {result.message}")
+        if result.errors:
+            click.echo("\n错误详情:")
+            for e in result.errors:
+                click.echo(f"   - {e}")
+        sys.exit(1)
+
+
+@cli.command(name='install-text')
+@click.option('--name', '-n', type=str, default=None, help='skill 名称')
+@click.option('--file', '-f', type=click.Path(exists=True), default=None,
+              help='从文件读取 SKILL.md 内容（不指定则进入交互输入）')
+def install_text(name, file):
+    """从提示词文本安装 skill
+
+    将别人分享的 SKILL.md 内容粘贴进来即可安装。
+
+    \b
+    交互式：
+        skill-service install-text
+
+    从文件读取：
+        skill-service install-text --file ./skill.md
+    """
+    import tempfile
+    import yaml
+    from pathlib import Path
+
+    click.echo("\n📝 从文本安装 Skill")
+    click.echo("=" * 80)
+
+    # 获取 SKILL.md 内容
+    if file:
+        content = Path(file).read_text(encoding='utf-8')
+        click.echo(f"从文件读取: {file}")
+    else:
+        click.echo("请粘贴 SKILL.md 的完整内容，完成后在新行输入 '---END---' 并回车：")
+        click.echo("-" * 80)
+        lines = []
+        while True:
+            try:
+                line = input()
+                if line.strip() == '---END---':
+                    break
+                lines.append(line)
+            except EOFError:
+                break
+        content = '\n'.join(lines)
+
+    if not content.strip():
+        click.echo("❌ 内容为空")
+        sys.exit(1)
+
+    # 解析 frontmatter 获取 skill 名称
+    skill_name = name
+    if not skill_name:
+        try:
+            if content.startswith('---'):
+                parts = content.split('---', 2)
+                if len(parts) >= 3:
+                    fm = yaml.safe_load(parts[1])
+                    if fm and fm.get('name'):
+                        skill_name = fm['name']
+        except Exception:
+            pass
+
+    if not skill_name:
+        skill_name = click.prompt('未能自动识别 skill 名称，请手动输入')
+
+    skill_name = skill_name.strip()
+    click.echo(f"\nSkill 名称: {skill_name}")
+
+    # 写入临时目录，然后调用 migrator 安装
+    settings = get_settings()
+    skills_dir = Path(settings.skills_directory)
+    target_path = skills_dir / skill_name
+
+    if target_path.exists():
+        if not click.confirm(f"⚠️  Skill '{skill_name}' 已存在，是否覆盖?"):
+            click.echo("已取消")
+            return
+        import shutil
+        shutil.rmtree(target_path)
+
+    try:
+        # 创建 skill 目录结构
+        target_path.mkdir(parents=True)
+        (target_path / 'scripts').mkdir()
+
+        # 写入 SKILL.md
+        (target_path / 'SKILL.md').write_text(content, encoding='utf-8')
+
+        # 检查是否包含脚本代码块，如果有则提取到 main.py
+        _extract_scripts_from_skill_md(content, target_path / 'scripts')
+
+        # 验证
+        from skill_service.utils.validator import validate_skill_directory
+        is_valid, errors = validate_skill_directory(target_path)
+
+        if not is_valid:
+            import shutil
+            shutil.rmtree(target_path)
+            click.echo(f"\n❌ Skill 内容验证失败:")
+            for e in errors:
+                click.echo(f"   - {e}")
+            sys.exit(1)
+
+        # 热加载
+        get_runner().reload_skills()
+
+        click.echo(f"\n✅ 安装成功!")
+        click.echo(f"   名称: {skill_name}")
+        click.echo(f"   路径: {target_path}")
+        click.echo(f"\n📝 使用方式:")
+        click.echo(f"   skill-service run {skill_name}")
+        click.echo(f"   skill-service info {skill_name}")
+
+        scripts_dir = target_path / 'scripts'
+        main_py = scripts_dir / 'main.py'
+        if not main_py.exists() or main_py.stat().st_size == 0:
+            click.echo(f"\n💡 提示: SKILL.md 中未包含可执行脚本，请手动创建：")
+            click.echo(f"   {main_py}")
+
+    except Exception as e:
+        import shutil
+        if target_path.exists():
+            shutil.rmtree(target_path)
+        click.echo(f"\n❌ 安装失败: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+def _extract_scripts_from_skill_md(content: str, scripts_dir: Path):
+    """从 SKILL.md 内容中提取 Python 脚本代码块，写入 scripts/ 目录"""
+    import re
+
+    # 匹配 ```python 或 ```py 代码块，以及 ### main.py / ### scripts/main.py 标记的代码块
+    patterns = [
+        # 标题指定了文件名的代码块：### main.py 或 ### scripts/main.py
+        r'###\s+(?:scripts/)?(\w+\.py)\s*\n```(?:python|py)?\s*\n(.*?)```',
+        # 通用 python 代码块（没有文件名标记的，视为 main.py）
+        r'```(?:python|py)\s*\n(.*?)```',
+    ]
+
+    found_named = False
+
+    # 先尝试有文件名标记的
+    named_pattern = re.compile(
+        r'###\s+(?:scripts/)?(\w+\.py)\s*\n```(?:python|py)?\s*\n(.*?)```',
+        re.DOTALL
+    )
+    for match in named_pattern.finditer(content):
+        filename, code = match.group(1), match.group(2)
+        out_path = scripts_dir / filename
+        out_path.write_text(code, encoding='utf-8')
+        found_named = True
+
+    # 如果没有命名代码块，找第一个 python 代码块作为 main.py
+    if not found_named:
+        generic_pattern = re.compile(r'```(?:python|py)\s*\n(.*?)```', re.DOTALL)
+        match = generic_pattern.search(content)
+        if match:
+            code = match.group(1)
+            # 确保有 execute 函数才写入
+            if 'def execute' in code:
+                (scripts_dir / 'main.py').write_text(code, encoding='utf-8')
+
+
+@cli.command()
+@click.argument('name')
+@click.option('--yes', '-y', is_flag=True, help='跳过确认提示')
+def uninstall(name, yes):
+    """卸载已安装的 skill
+
+    示例：
+
+    \b
+        skill-service uninstall my-skill
+        skill-service uninstall my-skill --yes
+    """
+    import shutil
+
+    settings = get_settings()
+    skill_path = Path(settings.skills_directory) / name
+
+    if not skill_path.exists():
+        click.echo(f"❌ Skill '{name}' 不存在")
+        sys.exit(1)
+
+    click.echo(f"\n🗑️  卸载 Skill: {name}")
+    click.echo(f"   路径: {skill_path}")
+
+    if not yes:
+        if not click.confirm(f"\n确定要卸载 '{name}' 吗?"):
+            click.echo("已取消")
+            return
+
+    try:
+        shutil.rmtree(skill_path)
+        get_runner().reload_skills()
+        click.echo(f"\n✅ 已卸载: {name}")
+    except Exception as e:
+        click.echo(f"\n❌ 卸载失败: {e}")
+        sys.exit(1)
+
+
 def main():
     """主入口函数"""
     cli()
