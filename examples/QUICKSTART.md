@@ -36,10 +36,25 @@ pip install -e .
 
 ```bash
 # 复制示例配置文件
-cp .env.example .env
+cp env.example .env
 
 # 根据需要修改配置
 # 默认配置即可运行
+```
+
+**生产环境重要配置**：
+
+```bash
+# 启用 API 鉴权（生产环境强烈建议开启）
+ENABLE_AUTH=true
+API_KEY=your-strong-api-key-here
+API_SECRET=your-strong-api-secret-here
+```
+
+鉴权启用后，调用敏感接口（如运行 skill）需要在请求头中添加：
+```
+X-API-Key: your-api-key
+X-API-Secret: your-api-secret
 ```
 
 ## 🚀 快速开始
@@ -127,10 +142,20 @@ curl -X POST http://localhost:8000/api/v1/skills/greeting/run \
 **使用 Python**:
 ```python
 import requests
+import os
+
+# 配置（如果启用了鉴权）
+headers = {}
+if os.environ.get("ENABLE_AUTH") == "true":
+    headers = {
+        "X-API-Key": os.environ.get("API_KEY"),
+        "X-API-Secret": os.environ.get("API_SECRET")
+    }
 
 # 运行 skill
 response = requests.post(
     'http://localhost:8000/api/v1/skills/greeting/run',
+    headers=headers,
     json={'parameters': {'name': 'World'}}
 )
 

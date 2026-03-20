@@ -76,6 +76,10 @@ services:
       - SERVER_HOST=0.0.0.0
       - SERVER_PORT=8000
       - LOG_LEVEL=INFO
+      # 生产环境必须启用鉴权并修改默认凭证
+      - ENABLE_AUTH=true
+      - API_KEY=${API_KEY:-change-me-in-production}
+      - API_SECRET=${API_SECRET:-change-me-in-production}
     restart: unless-stopped
 ```
 
@@ -111,6 +115,10 @@ Type=simple
 User=www-data
 WorkingDirectory=/var/www/skill-service
 Environment="PATH=/var/www/skill-service/venv/bin"
+# 生产环境必须启用鉴权并配置强密钥
+Environment="ENABLE_AUTH=true"
+Environment="API_KEY=your-strong-api-key-here"
+Environment="API_SECRET=your-strong-api-secret-here"
 ExecStart=/var/www/skill-service/venv/bin/uvicorn skill_service.api.server:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=10
@@ -226,13 +234,39 @@ sudo supervisorctl status skill-service
 
 ## 🔒 安全配置
 
-### 1. 启用 API Key 认证
+### 1. 启用 API Key + Secret 双因子认证
 
 修改 `.env` 文件：
 
 ```bash
-API_KEY=your-strong-secret-key-here
+# 启用鉴权（生产环境必须开启）
 ENABLE_AUTH=true
+
+# API 访问凭证（必须修改为强密钥，不要使用默认值）
+API_KEY=your-strong-api-key-at-least-32-chars
+API_SECRET=your-strong-api-secret-at-least-32-chars
+```
+
+**重要安全提示**：
+- 生产环境**必须**启用鉴权 (`ENABLE_AUTH=true`)
+- 必须将默认凭证修改为至少 32 位的随机字符串
+- 定期轮换 API Key 和 Secret
+- 不要在代码中硬编码凭证，使用环境变量
+
+**调用受保护接口时需要提供凭证**：
+
+```bash
+# 方式 1: 请求头（推荐）
+curl -X POST http://localhost:8000/api/v1/skills/greeting/run \
+  -H "X-API-Key: your-api-key" \
+  -H "X-API-Secret: your-api-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"parameters": {"name": "World"}}'
+
+# 方式 2: Query 参数
+curl -X POST "http://localhost:8000/api/v1/skills/greeting/run?api_key=your-api-key&api_secret=your-api-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"parameters": {"name": "World"}}'
 ```
 
 ### 2. 配置 CORS

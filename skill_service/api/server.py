@@ -5,6 +5,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
+from fastapi.openapi.utils import get_openapi
 from contextlib import asynccontextmanager
 
 from skill_service.config import get_settings
@@ -31,6 +32,18 @@ async def lifespan(app: FastAPI):
     logger.info(f"版本: {settings.api_prefix}")
     logger.info(f"调试模式: {settings.debug}")
     logger.info(f"Skills 目录: {settings.skills_directory}")
+
+    # 鉴权状态提示
+    if settings.enable_auth:
+        if settings.is_using_default_credentials:
+            logger.warning("⚠️  [安全警告] 鉴权已启用，但 API_KEY / API_SECRET 仍为默认值！")
+            logger.warning("⚠️  请立即在 .env 中修改 API_KEY 和 API_SECRET，否则所有受保护接口将拒绝访问！")
+        else:
+            logger.info("🔒 API 鉴权已启用（X-API-Key + X-API-Secret 双因子）")
+    else:
+        logger.warning("⚠️  [安全提示] API 鉴权未启用（ENABLE_AUTH=false）")
+        logger.warning("⚠️  生产环境请在 .env 中设置 ENABLE_AUTH=true 并配置 API_KEY / API_SECRET")
+
     logger.info("=" * 80)
 
     yield
@@ -66,6 +79,45 @@ app.include_router(
     prefix=settings.api_prefix,
     tags=["skills"]
 )
+
+
+def custom_openapi():
+    """
+    自定义 OpenAPI schema，添加双因子鉴权的安全方案
+    
+    在 Swagger UI 中显示两个输入框：API Key 和 API Secret
+    """
+    if app.openapi_schema:
+        return app.openapi_schema
+    
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    
+    # 添加安全方案 - 使用清晰的名称，与显示的名称一致
+    openapi_schema["components"]["securitySchemes"] = {
+        "X-API-Key": {
+            "type": "apiKey",
+            "in": "header",
+            "name": "X-API-Key",
+            "description": "API Key 凭证"
+        },
+        "X-API-Secret": {
+            "type": "apiKey",
+            "in": "header",
+            "name": "X-API-Secret",
+            "description": "API Secret 凭证"
+        }
+    }
+    
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi  # type: ignore
 
 
 @app.exception_handler(RequestValidationError)

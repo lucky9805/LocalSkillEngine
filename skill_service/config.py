@@ -25,8 +25,13 @@ class Settings(BaseSettings):
     api_prefix: str = "/api/v1"
     max_execution_time: int = 300
 
-    # Security
-    api_key: str = "your-secret-api-key-change-this"
+    # Security —— API Key / Secret 双因子鉴权
+    # 启用鉴权后，调用受保护接口（/chat、/skills/*/run 等）必须同时携带：
+    #   请求头  X-API-Key: <api_key>
+    #   请求头  X-API-Secret: <api_secret>
+    # 或者通过 Query 参数：?api_key=...&api_secret=...
+    api_key: str = "your-api-key-change-this"
+    api_secret: str = "your-api-secret-change-this"
     enable_auth: bool = False
 
     model_config = SettingsConfigDict(
@@ -45,6 +50,14 @@ class Settings(BaseSettings):
     def api_redoc_url(self) -> str:
         """ReDoc URL"""
         return "/redoc"
+
+    @property
+    def is_using_default_credentials(self) -> bool:
+        """检测是否仍在使用默认凭证（不安全）"""
+        return (
+            self.api_key == "your-api-key-change-this"
+            or self.api_secret == "your-api-secret-change-this"
+        )
 
 
 # 全局配置实例

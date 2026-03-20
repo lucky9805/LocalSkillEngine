@@ -31,12 +31,17 @@ pip install -r requirements-dev.txt  # 如果有的话
 
 ```bash
 # 复制配置文件
-cp .env.example .env
+cp env.example .env
 
 # 修改开发配置
 # DEBUG=True
 # LOG_LEVEL=DEBUG
+
+# 开发环境建议禁用鉴权（方便测试）
+ENABLE_AUTH=false
 ```
+
+**注意**：开发环境可以禁用鉴权 (`ENABLE_AUTH=false`)，但生产环境必须启用并配置强密钥！
 
 ## 📁 项目结构
 
@@ -47,6 +52,7 @@ skill-service/
 │   │   ├── __init__.py
 │   │   ├── server.py      # FastAPI 服务器
 │   │   ├── routes.py      # API 路由
+│   │   ├── auth.py        # API 鉴权
 │   │   └── schemas.py     # Pydantic schemas
 │   ├── storage/           # 存储模块
 │   │   ├── __init__.py
@@ -399,6 +405,43 @@ async def test_skill_execution():
 
     assert result.success is True
     assert "Hello, Test!" in result.result
+```
+
+### API 鉴权测试示例
+
+```python
+from fastapi.testclient import TestClient
+from skill_service.api.server import app
+from unittest.mock import patch
+
+client = TestClient(app)
+
+def test_api_with_auth():
+    """测试带鉴权的 API 调用"""
+    # 假设鉴权已启用
+    headers = {
+        "X-API-Key": "test-key",
+        "X-API-Secret": "test-secret"
+    }
+
+    response = client.post(
+        "/api/v1/skills/greeting/run",
+        headers=headers,
+        json={"parameters": {"name": "Test"}}
+    )
+
+    assert response.status_code == 200
+
+def test_api_without_auth_fails():
+    """测试无鉴权调用失败"""
+    # 如果鉴权已启用，应该返回 401
+    response = client.post(
+        "/api/v1/skills/greeting/run",
+        json={"parameters": {"name": "Test"}}
+    )
+
+    # 根据鉴权配置，可能是 401（鉴权开启）或 200（鉴权关闭）
+    assert response.status_code in [200, 401]
 ```
 
 ### 集成测试示例

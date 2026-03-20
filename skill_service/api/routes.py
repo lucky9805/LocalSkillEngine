@@ -2,7 +2,7 @@
 API 路由模块
 """
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List
 
 from skill_service.api.schemas import (
@@ -28,6 +28,7 @@ from skill_service.api.schemas import (
 from skill_service.runner import SkillRunner
 from skill_service.models import SkillExecutionRequest as ModelExecutionRequest
 from skill_service.utils.logger import get_logger
+from skill_service.api.auth import verify_api_credentials
 
 # 创建 router
 router = APIRouter()
@@ -109,9 +110,16 @@ async def get_skill(skill_name: str) -> SkillDetail:
     "/skills/{skill_name}/run",
     response_model=SkillExecutionResult,
     summary="运行 Skill",
-    description="执行指定的 skill 并返回结果"
+    description="执行指定的 skill 并返回结果（需要鉴权）",
+    openapi_extra={
+        "security": [{"X-API-Key": [], "X-API-Secret": []}]
+    }
 )
-async def run_skill(skill_name: str, request: SkillExecutionRequest) -> SkillExecutionResult:
+async def run_skill(
+    skill_name: str,
+    request: SkillExecutionRequest,
+    _auth: None = Depends(verify_api_credentials),
+) -> SkillExecutionResult:
     """
     运行指定的 skill
 
@@ -159,9 +167,14 @@ async def run_skill(skill_name: str, request: SkillExecutionRequest) -> SkillExe
     "/skills/reload",
     response_model=dict,
     summary="重新加载 Skills",
-    description="重新加载所有 skills（热更新）"
+    description="重新加载所有 skills（热更新）（需要鉴权）",
+    openapi_extra={
+        "security": [{"X-API-Key": [], "X-API-Secret": []}]
+    }
 )
-async def reload_skills() -> dict:
+async def reload_skills(
+    _auth: None = Depends(verify_api_credentials),
+) -> dict:
     """
     重新加载所有 skills
 
@@ -235,9 +248,15 @@ async def root() -> dict:
     "/chat",
     response_model=ChatResponse,
     summary="智能对话",
-    description="通过自然语言描述自动选择并执行 skill"
+    description="通过自然语言描述自动选择并执行 skill（需要鉴权）",
+    openapi_extra={
+        "security": [{"X-API-Key": [], "X-API-Secret": []}]
+    }
 )
-async def chat(request: ChatRequest) -> ChatResponse:
+async def chat(
+    request: ChatRequest,
+    _auth: None = Depends(verify_api_credentials),
+) -> ChatResponse:
     """
     智能对话接口 - 自动选择并执行 skill
 
@@ -337,9 +356,15 @@ async def chat(request: ChatRequest) -> ChatResponse:
     "/import/directory",
     response_model=ImportResponse,
     summary="从目录导入 Skill",
-    description="从本地目录导入 skill"
+    description="从本地目录导入 skill（需要鉴权）",
+    openapi_extra={
+        "security": [{"X-API-Key": [], "X-API-Secret": []}]
+    }
 )
-async def import_from_directory(request: ImportFromDirectoryRequest) -> ImportResponse:
+async def import_from_directory(
+    request: ImportFromDirectoryRequest,
+    _auth: None = Depends(verify_api_credentials),
+) -> ImportResponse:
     """
     从本地目录导入 skill
     
@@ -384,9 +409,15 @@ async def import_from_directory(request: ImportFromDirectoryRequest) -> ImportRe
     "/import/git",
     response_model=ImportResponse,
     summary="从 Git 导入 Skill",
-    description="从 Git 仓库克隆并导入 skill"
+    description="从 Git 仓库克隆并导入 skill（需要鉴权）",
+    openapi_extra={
+        "security": [{"X-API-Key": [], "X-API-Secret": []}]
+    }
 )
-async def import_from_git(request: ImportFromGitRequest) -> ImportResponse:
+async def import_from_git(
+    request: ImportFromGitRequest,
+    _auth: None = Depends(verify_api_credentials),
+) -> ImportResponse:
     """
     从 Git 仓库导入 skill
 
@@ -432,9 +463,15 @@ async def import_from_git(request: ImportFromGitRequest) -> ImportResponse:
     "/install",
     response_model=ImportResponse,
     summary="安装 Skill",
-    description="统一安装接口：自动识别 Git URL / 本地路径 / ZIP 文件"
+    description="统一安装接口：自动识别 Git URL / 本地路径 / ZIP 文件（需要鉴权）",
+    openapi_extra={
+        "security": [{"X-API-Key": [], "X-API-Secret": []}]
+    }
 )
-async def install_skill(request: InstallRequest) -> ImportResponse:
+async def install_skill(
+    request: InstallRequest,
+    _auth: None = Depends(verify_api_credentials),
+) -> ImportResponse:
     """
     统一安装 skill 接口
 
@@ -483,9 +520,15 @@ async def install_skill(request: InstallRequest) -> ImportResponse:
     "/install/text",
     response_model=ImportResponse,
     summary="从文本安装 Skill",
-    description="将 SKILL.md 文本内容直接安装为 skill"
+    description="将 SKILL.md 文本内容直接安装为 skill（需要鉴权）",
+    openapi_extra={
+        "security": [{"X-API-Key": [], "X-API-Secret": []}]
+    }
 )
-async def install_skill_from_text(request: InstallFromTextRequest) -> ImportResponse:
+async def install_skill_from_text(
+    request: InstallFromTextRequest,
+    _auth: None = Depends(verify_api_credentials),
+) -> ImportResponse:
     """
     从 SKILL.md 文本内容安装 skill
 
@@ -610,9 +653,15 @@ async def install_skill_from_text(request: InstallFromTextRequest) -> ImportResp
     "/skills/{skill_name}",
     response_model=UninstallResponse,
     summary="卸载 Skill",
-    description="删除已安装的 skill"
+    description="删除已安装的 skill（需要鉴权）",
+    openapi_extra={
+        "security": [{"X-API-Key": [], "X-API-Secret": []}]
+    }
 )
-async def uninstall_skill(skill_name: str) -> UninstallResponse:
+async def uninstall_skill(
+    skill_name: str,
+    _auth: None = Depends(verify_api_credentials),
+) -> UninstallResponse:
     """
     卸载（删除）已安装的 skill
 

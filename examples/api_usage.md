@@ -445,28 +445,73 @@ if __name__ == '__main__':
 
 ## 安全性
 
-### API Key 认证
+### API Key + Secret 双因子认证
 
-在生产环境中，建议启用 API Key 认证：
+在生产环境中，强烈建议启用 API Key + Secret 双因子认证：
 
 ```bash
 # .env 文件
-API_KEY=your-secret-api-key
-ENABLE_AUTH=True
+ENABLE_AUTH=true
+API_KEY=your-api-key-change-this
+API_SECRET=your-api-secret-change-this
 ```
 
-然后在请求中添加认证头：
+**重要**：请务必将默认凭证修改为强密钥（至少 32 位随机字符串）！
+
+#### 调用受保护接口
+
+鉴权启用后，调用敏感接口（如 `/run`, `/chat`, `/reload` 等）需要提供凭证：
+
+**方式 1: 请求头（推荐）**
 
 ```python
 headers = {
-    'X-API-Key': 'your-secret-api-key'
+    'X-API-Key': 'your-api-key',
+    'X-API-Secret': 'your-api-secret'
 }
 
-response = requests.get(
-    'http://localhost:8000/api/v1/skills',
-    headers=headers
+response = requests.post(
+    'http://localhost:8000/api/v1/skills/greeting/run',
+    headers=headers,
+    json={'parameters': {'name': 'World'}}
 )
 ```
+
+**方式 2: Query 参数**
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/skills/greeting/run?api_key=your-api-key&api_secret=your-api-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"parameters": {"name": "World"}}'
+```
+
+#### 受保护的端点
+
+以下端点需要鉴权（当 `ENABLE_AUTH=true` 时）：
+- `POST /api/v1/skills/{name}/run` - 执行 skill
+- `POST /api/v1/chat` - 自然语言对话
+- `POST /api/v1/skills/reload` - 重新加载 skills
+- `POST /api/v1/import/directory` - 导入本地 skill
+- `POST /api/v1/import/git` - 从 Git 导入 skill
+- `POST /api/v1/install` - 安装 skill
+- `POST /api/v1/install/text` - 从文本安装 skill
+- `DELETE /api/v1/skills/{name}` - 删除 skill
+
+以下端点**不需要**鉴权：
+- `GET /health` - 健康检查
+- `GET /api/v1/skills` - 列出 skills
+- `GET /api/v1/skills/{name}` - 获取 skill 详情
+
+#### 测试环境跳过鉴权
+
+在开发和测试环境中，可以禁用鉴权：
+
+```bash
+# .env 文件
+ENABLE_AUTH=false
+```
+
+此时所有接口都可以直接调用，方便测试。
 
 ### HTTPS
 
