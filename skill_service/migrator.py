@@ -204,21 +204,55 @@ class SkillMigrator:
                 # 确定 skill 源目录
                 if subdir:
                     source_dir = clone_dir / subdir
+                    if not source_dir.exists():
+                        return MigrationResult(
+                            success=False,
+                            skill_name=skill_name,
+                            message=f"找不到子目录: {subdir}"
+                        )
+                    return self.migrate_from_directory(source_dir, skill_name, overwrite)
                 else:
-                    # 尝试在仓库中查找 skill 目录
-                    source_dir = self._find_skill_in_directory(clone_dir)
-                    if not source_dir:
-                        source_dir = clone_dir
-                
-                if not source_dir.exists():
+                    # 先尝试单 skill（根目录或一层子目录有 SKILL.md）
+                    single_skill_dir = self._find_skill_in_directory(clone_dir)
+                    if single_skill_dir:
+                        return self.migrate_from_directory(single_skill_dir, skill_name, overwrite)
+
+                    # 没找到单 skill → 尝试批量安装（仓库是 skill 集合）
+                    skill_dirs = self.find_all_skills_in_directory(clone_dir)
+                    if not skill_dirs:
+                        return MigrationResult(
+                            success=False,
+                            skill_name=skill_name,
+                            message="仓库中未找到任何 skill（没有包含 SKILL.md 的目录）"
+                        )
+
+                    # 批量迁移
+                    results = self.migrate_all_from_directory(clone_dir, overwrite)
+                    ok = [r for r in results if r.success]
+                    fail = [r for r in results if not r.success]
+                    installed_names = [r.skill_name for r in ok]
+
+                    # 构建聚合结果
+                    warnings = []
+                    errors = []
+                    for r in fail:
+                        errors.append(f"{r.skill_name or '?'}: {r.message}")
+                    for r in ok:
+                        if r.warnings:
+                            warnings.extend(r.warnings)
+
                     return MigrationResult(
-                        success=False,
-                        skill_name=skill_name,
-                        message=f"找不到 skill 目录: {subdir or '仓库根目录'}"
+                        success=len(ok) > 0,
+                        skill_name=", ".join(installed_names) if installed_names else None,
+                        target_path=self.target_dir,
+                        message=(
+                            f"批量安装完成: 成功 {len(ok)} 个，失败 {len(fail)} 个"
+                            if results
+                            else "没有找到可安装的 skill"
+                        ),
+                        warnings=warnings,
+                        errors=errors,
                     )
-                
-                # 迁移到目标目录
-                return self.migrate_from_directory(source_dir, skill_name, overwrite)
                 
             except subprocess.CalledProcessError as e:
                 return MigrationResult(
@@ -314,27 +348,96 @@ class SkillMigrator:
     
     def _find_skill_in_directory(self, directory: Path) -> Optional[Path]:
         """
-        在目录中查找 skill 目录
-        
+        在目录中查找单个 skill 目录（只匹配根目录或一层子目录，用于单 skill 仓库）
+
         Args:
             directory: 搜索目录
-            
+
         Returns:
             skill 目录路径，未找到返回 None
         """
         # 直接检查当前目录
-        skill_md = directory / "SKILL.md"
-        if skill_md.exists():
+        if (directory / "SKILL.md").exists():
             return directory
-        
-        # 搜索子目录
+
+        # 搜索一层子目录
         for item in directory.iterdir():
-            if item.is_dir():
-                skill_md = item / "SKILL.md"
-                if skill_md.exists():
+            if item.is_dir() and not item.name.startswith('.'):
+                if (item / "SKILL.md").exists():
                     return item
-        
+
         return None
+
+    def find_all_skills_in_directory(self, directory: Path, max_depth: int = 4) -> List[Path]:
+        """
+        递归搜索目录中所有包含 SKILL.md 的 skill 目录
+
+        Args:
+            directory: 搜索根目录
+            max_depth: 最大递归深度（默认 4 层）
+
+        Returns:
+            所有 skill 目录路径列表
+        """
+        found: List[Path] = []
+
+        def _walk(path: Path, depth: int):
+            if depth > max_depth:
+                return
+            try:
+                for item in path.iterdir():
+                    if item.is_dir() and not item.name.startswith('.'):
+                        if (item / "SKILL.md").exists():
+                            found.append(item)
+                        else:
+                            _walk(item, depth + 1)
+            except PermissionError:
+                pass
+
+        # 当前目录本身也算
+        if (directory / "SKILL.md").exists():
+            found.append(directory)
+        else:
+            _walk(directory, 1)
+
+        return found
+
+    def migrate_all_from_directory(
+        self,
+        source_dir: Path,
+        overwrite: bool = False,
+        name_prefix: str = ""
+    ) -> List[MigrationResult]:
+        """
+        批量迁移目录中所有 skill
+
+        Args:
+            source_dir: 源目录（递归搜索其中所有 skill）
+            overwrite: 是否覆盖已存在的 skill
+            name_prefix: skill 名称前缀（可选）
+
+        Returns:
+            每个 skill 的 MigrationResult 列表
+        """
+        skill_dirs = self.find_all_skills_in_directory(source_dir)
+        if not skill_dirs:
+            return [MigrationResult(
+                success=False,
+                message=f"在 {source_dir} 中未找到任何 skill（没有包含 SKILL.md 的目录）"
+            )]
+
+        results = []
+        for skill_dir in skill_dirs:
+            # 优先从 frontmatter 读取名称，否则用目录名
+            _, metadata = self._parse_skill_md(skill_dir / "SKILL.md")
+            skill_name = metadata.get("name") or skill_dir.name
+            if name_prefix:
+                skill_name = f"{name_prefix}-{skill_name}"
+
+            result = self.migrate_from_directory(skill_dir, skill_name, overwrite)
+            results.append(result)
+
+        return results
     
     def list_importable_skills(self, source_dir: Path) -> List[Dict]:
         """

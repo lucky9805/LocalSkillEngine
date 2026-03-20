@@ -1424,19 +1424,44 @@ def install(source, name, subdir, overwrite):
 
     click.echo("")
 
+    # 判断是批量安装还是单个安装（批量时 skill_name 含逗号，或 message 含"批量"）
+    is_batch = result.skill_name and (',' in result.skill_name or '批量' in result.message)
+
     if result.success:
-        click.echo(f"✅ 安装成功!")
-        click.echo(f"   名称: {result.skill_name}")
-        click.echo(f"   路径: {result.target_path}")
+        if is_batch:
+            # 批量安装汇总
+            names = [n.strip() for n in result.skill_name.split(',')]
+            click.echo(f"✅ {result.message}")
+            click.echo(f"\n📦 已安装 {len(names)} 个 skills:")
+            for n in names:
+                click.echo(f"   ✓ {n}")
 
-        if result.warnings:
-            click.echo(f"\n⚠️  警告:")
-            for w in result.warnings:
-                click.echo(f"   - {w}")
+            if result.warnings:
+                click.echo(f"\n⚠️  警告:")
+                for w in result.warnings:
+                    click.echo(f"   - {w}")
 
-        click.echo(f"\n📝 使用方式:")
-        click.echo(f"   skill-service run {result.skill_name}")
-        click.echo(f"   skill-service info {result.skill_name}")
+            if result.errors:
+                click.echo(f"\n⚠️  以下 skill 安装失败:")
+                for e in result.errors:
+                    click.echo(f"   ✗ {e}")
+
+            click.echo(f"\n📝 使用方式:")
+            click.echo(f"   skill-service list")
+            click.echo(f"   skill-service info <skill-name>")
+        else:
+            click.echo(f"✅ 安装成功!")
+            click.echo(f"   名称: {result.skill_name}")
+            click.echo(f"   路径: {result.target_path}")
+
+            if result.warnings:
+                click.echo(f"\n⚠️  警告:")
+                for w in result.warnings:
+                    click.echo(f"   - {w}")
+
+            click.echo(f"\n📝 使用方式:")
+            click.echo(f"   skill-service run {result.skill_name}")
+            click.echo(f"   skill-service info {result.skill_name}")
     else:
         click.echo(f"❌ 安装失败: {result.message}")
         if result.errors:
