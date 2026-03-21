@@ -254,7 +254,9 @@ class SkillRunner:
             "assets": skill.assets,
             "enabled": skill.enabled,
             "status": skill.status.value,
-            "path": skill.path
+            "path": skill.path,
+            "created_at": skill.created_at,
+            "updated_at": skill.updated_at
         }
 
     def reload_skills(self) -> None:

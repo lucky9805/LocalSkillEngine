@@ -107,6 +107,7 @@ class SkillExecutionRequest:
     skill_name: str
     parameters: Dict[str, Any] = field(default_factory=dict)
     timeout: Optional[int] = None
+    model: Optional[str] = None  # 指定使用的模型，None 表示使用系统默认模型
 
 
 @dataclass

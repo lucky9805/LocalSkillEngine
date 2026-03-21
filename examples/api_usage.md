@@ -139,9 +139,15 @@ Content-Type: application/json
 
 {
   "parameters": {},
-  "timeout": null
+  "timeout": null,
+  "model": null
 }
 ```
+
+**参数说明**:
+- `parameters`: Skill 执行参数（可选，默认为空对象）
+- `timeout`: 执行超时时间，单位秒（可选，默认无超时）
+- `model`: 指定使用的模型（可选，默认使用系统默认模型）
 
 **cURL 示例**:
 ```bash
@@ -154,6 +160,11 @@ curl -X POST http://localhost:8000/api/v1/skills/greeting/run \
 curl -X POST http://localhost:8000/api/v1/skills/greeting/run \
   -H "Content-Type: application/json" \
   -d '{"parameters": {"name": "Alice"}, "timeout": 30}'
+
+# 指定模型执行（使用特定模型运行 skill）
+curl -X POST http://localhost:8000/api/v1/skills/greeting/run \
+  -H "Content-Type: application/json" \
+  -d '{"parameters": {"name": "Alice"}, "model": "gpt-4"}'
 ```
 
 **Python 示例**:
@@ -170,7 +181,8 @@ payload = {
         "name": "Alice",
         "count": 3
     },
-    "timeout": 30  # 30 秒超时
+    "timeout": 30,  # 30 秒超时
+    "model": "gpt-4"  # 指定使用 gpt-4 模型（可选）
 }
 
 # 发送请求
@@ -288,6 +300,95 @@ if response.status_code == 200:
 {
   "success": true,
   "message": "Skills 已重新加载"
+}
+```
+
+### 6. 智能对话 (Chat)
+
+通过自然语言描述自动选择并执行 skill。
+
+**请求**:
+```http
+POST /api/v1/chat
+Content-Type: application/json
+
+{
+  "user_input": "计算 123 加 456",
+  "model": "gpt-4"
+}
+```
+
+**参数说明**:
+- `user_input`: 用户输入的自然语言描述（必需）
+- `model`: 指定使用的模型（可选，默认使用系统默认模型）
+
+**cURL 示例**:
+```bash
+# 基本调用
+curl -X POST http://localhost:8000/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"user_input": "计算 123 加 456"}'
+
+# 指定模型
+curl -X POST http://localhost:8000/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"user_input": "写一首关于春天的诗", "model": "claude-3-opus-20240229"}'
+```
+
+**Python 示例**:
+```python
+import requests
+
+url = 'http://localhost:8000/api/v1/chat'
+
+# 准备参数
+payload = {
+    "user_input": "计算 123 加 456",
+    "model": "gpt-4"  # 指定使用 gpt-4 模型（可选）
+}
+
+# 发送请求
+response = requests.post(url, json=payload)
+
+# 处理响应
+if response.status_code == 200:
+    result = response.json()
+    
+    if result['success']:
+        print(f"✅ 执行成功!")
+        print(f"选择的 skill: {result['selection']['skill_name']}")
+        print(f"置信度: {result['selection']['confidence']}")
+        print(f"结果: {result['execution']['result']}")
+    else:
+        print(f"❌ 执行失败: {result['error']}")
+else:
+    print(f"请求失败: {response.status_code}")
+    print(response.text)
+```
+
+**响应**:
+```json
+{
+  "success": true,
+  "user_input": "计算 123 加 456",
+  "selection": {
+    "skill_name": "calculator",
+    "confidence": 0.95,
+    "reasoning": "用户需要进行数学计算",
+    "parameters": {
+      "expression": "123 + 456"
+    },
+    "direct_response": null
+  },
+  "execution": {
+    "success": true,
+    "result": 579,
+    "error": null,
+    "execution_time": 0.123,
+    "logs": ["开始执行 skill: calculator", "执行完成"]
+  },
+  "error": null,
+  "timestamp": "2024-01-01T12:00:00.000000"
 }
 ```
 

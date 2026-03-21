@@ -53,10 +53,24 @@ async def list_skills() -> SkillListResponse:
     """
     try:
         skills_info = runner.list_skills()
+        
+        # 将 dataclass 转换为 Pydantic 模型
+        skills_list = [
+            SkillInfo(
+                name=skill.name,
+                version=skill.version,
+                category=skill.category,
+                description=skill.description,
+                author=skill.author,
+                enabled=skill.enabled,
+                status=skill.status.value if hasattr(skill.status, 'value') else skill.status
+            )
+            for skill in skills_info
+        ]
 
         return SkillListResponse(
-            skills=skills_info,
-            total=len(skills_info)
+            skills=skills_list,
+            total=len(skills_list)
         )
     except Exception as e:
         logger.error(f"列出 skills 失败: {e}")
@@ -138,7 +152,8 @@ async def run_skill(
         model_request = ModelExecutionRequest(
             skill_name=skill_name,
             parameters=request.parameters,
-            timeout=request.timeout
+            timeout=request.timeout,
+            model=request.model
         )
 
         # 执行 skill
@@ -278,7 +293,7 @@ async def chat(
     try:
         # 创建 LLM 和 Selector
         manager = get_multi_model_manager()
-        llm = manager.create_llm_provider()
+        llm = manager.create_llm_provider(model=request.model)
         selector = SkillSelector(llm)
         
         # 获取可用 skills
@@ -322,7 +337,8 @@ async def chat(
         # 执行 skill
         model_request = ModelExecutionRequest(
             skill_name=selection.skill_name,
-            parameters=selection.parameters
+            parameters=selection.parameters,
+            model=request.model
         )
         
         result = await runner.execute(model_request)

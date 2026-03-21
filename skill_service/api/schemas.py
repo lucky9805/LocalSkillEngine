@@ -60,12 +60,14 @@ class SkillExecutionRequest(BaseModel):
     """Skill 执行请求"""
     parameters: Dict[str, Any] = Field(default_factory=dict, description="执行参数")
     timeout: Optional[int] = Field(None, description="超时时间（秒）")
+    model: Optional[str] = Field(None, description="指定使用的模型（可选，默认使用系统默认模型）")
 
     class Config:
         json_schema_extra = {
             "example": {
                 "parameters": {"name": "World"},
-                "timeout": 30
+                "timeout": 30,
+                "model": "gpt-4"
             }
         }
 
@@ -147,11 +149,13 @@ class ImportResponse(BaseModel):
 class ChatRequest(BaseModel):
     """智能对话请求"""
     user_input: str = Field(..., description="用户输入的自然语言描述")
+    model: Optional[str] = Field(None, description="指定使用的模型（可选，默认使用系统默认模型）")
     
     class Config:
         json_schema_extra = {
             "example": {
-                "user_input": "计算 123 加 456"
+                "user_input": "计算 123 加 456",
+                "model": "gpt-4"
             }
         }
 

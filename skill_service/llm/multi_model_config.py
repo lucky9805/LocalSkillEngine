@@ -452,12 +452,13 @@ class MultiModelConfigManager:
         """获取当前配置名称"""
         return self._current_profile
     
-    def create_llm_provider(self, profile_name: Optional[str] = None):
+    def create_llm_provider(self, profile_name: Optional[str] = None, model: Optional[str] = None):
         """
         创建 LLM Provider
         
         Args:
             profile_name: 配置名称，None 表示使用当前配置
+            model: 指定模型名称（可选），如果提供则覆盖 profile 中的 model
             
         Returns:
             LLMProvider 实例
@@ -475,10 +476,13 @@ class MultiModelConfigManager:
         llm_config = profile.to_llm_config()
         provider_type = LLMProviderType(llm_config.provider)
         
+        # 如果指定了 model 参数，覆盖 profile 中的 model
+        model_name = model if model else llm_config.model
+        
         provider_config = {
             "api_key": llm_config.api_key,
             "base_url": llm_config.base_url,
-            "model": llm_config.model,
+            "model": model_name,
             "temperature": llm_config.temperature,
             "max_tokens": llm_config.max_tokens,
             "timeout": llm_config.timeout,

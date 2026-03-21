@@ -158,13 +158,79 @@ skill-service version
 
 ## 🌐 API 端点
 
-- `GET /health` - 健康检查
-- `GET /api/v1/skills` - 列出所有 skills
-- `GET /api/v1/skills/{name}` - 获取 skill 详情
-- `POST /api/v1/skills/{name}/run` - 运行 skill
-- `POST /api/v1/skills/reload` - 重新加载 skills
+- `GET /health` - 健康检查（无需鉴权）
+- `GET /api/v1/skills` - 列出所有 skills（无需鉴权）
+- `GET /api/v1/skills/{name}` - 获取 skill 详情（无需鉴权）
+- `POST /api/v1/skills/{name}/run` - 运行 skill（需鉴权，支持指定模型）
+- `POST /api/v1/chat` - 智能对话（需鉴权，支持指定模型）
+- `POST /api/v1/skills/reload` - 重新加载 skills（需鉴权）
 
 访问 http://localhost:8000/docs 查看 API 文档。
+
+### 🧠 指定模型执行
+
+Skill 运行和智能对话接口支持指定模型，让不同能力的模型执行对应的 skill：
+
+```python
+import requests
+
+headers = {
+    "X-API-Key": "your-api-key",
+    "X-API-Secret": "your-api-secret"
+}
+
+# 运行 skill 时指定模型
+response = requests.post(
+    'http://localhost:8000/api/v1/skills/writing/run',
+    headers=headers,
+    json={
+        'parameters': {'topic': 'AI'},
+        'model': 'gpt-4'  # 指定使用 gpt-4 模型
+    }
+)
+
+# 智能对话时指定模型
+response = requests.post(
+    'http://localhost:8000/api/v1/chat',
+    headers=headers,
+    json={
+        'user_input': '写一首关于春天的诗',
+        'model': 'claude-3-opus-20240229'  # 指定使用 Claude 模型
+    }
+)
+```
+
+不指定 `model` 参数时，将使用系统默认模型。
+
+### 🔐 API 鉴权
+
+生产环境建议启用 API Key + Secret 双因子认证：
+
+```bash
+# .env 文件
+ENABLE_AUTH=true
+API_KEY=your-api-key
+API_SECRET=your-api-secret
+```
+
+调用受保护接口时添加请求头：
+
+```python
+import requests
+
+headers = {
+    "X-API-Key": "your-api-key",
+    "X-API-Secret": "your-api-secret"
+}
+
+response = requests.post(
+    'http://localhost:8000/api/v1/skills/greeting/run',
+    headers=headers,
+    json={'parameters': {'name': 'World'}}
+)
+```
+
+详见 [API 使用文档](examples/api_usage.md#安全性)。
 
 ## 📖 创建自定义 Skill
 

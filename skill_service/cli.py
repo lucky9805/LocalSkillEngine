@@ -498,20 +498,36 @@ def serve(ctx, host, port, reload):
         server_host = host or settings.server_host
         server_port = port or settings.server_port
 
-        # 检查端口是否被占用
+        # 检查端口是否被占用（尝试多个地址）
         import socket
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            sock.bind((server_host, server_port))
-        except OSError:
+        
+        def check_port_available(host, port):
+            """检查端口是否在指定地址可用"""
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind((host, port))
+                return True
+            except OSError:
+                return False
+            finally:
+                sock.close()
+        
+        # 先检查 127.0.0.1，再检查 0.0.0.0
+        check_hosts = ['127.0.0.1', '0.0.0.0'] if server_host == '0.0.0.0' else [server_host]
+        port_in_use = False
+        for check_host in check_hosts:
+            if not check_port_available(check_host, server_port):
+                port_in_use = True
+                break
+        
+        if port_in_use:
             click.echo(f"\n❌ 端口 {server_port} 已被占用")
             click.echo(f"   请检查是否有其他服务正在使用该端口：")
             click.echo(f"   lsof -i :{server_port}")
             click.echo(f"   或先停止已有服务：")
             click.echo(f"   skill-service serve stop")
             sys.exit(1)
-        finally:
-            sock.close()
 
         # 检查是否已有服务在运行
         pid_file = get_pid_file()
