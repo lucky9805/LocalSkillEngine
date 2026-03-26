@@ -70,6 +70,10 @@ class SkillStore:
         Returns:
             加载的 Skill 对象，失败返回 None
         """
+        # 跳过有 .skip 标记的目录
+        if (skill_path / '.skip').exists():
+            return None
+        
         # 检查 SKILL.md 是否存在（支持大小写）
         skill_md_path = None
         for name in ("SKILL.md", "skill.md"):

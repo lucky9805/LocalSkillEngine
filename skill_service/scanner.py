@@ -118,6 +118,11 @@ class SkillScanner:
                     if item.name.startswith('.') or item.name == '__pycache__':
                         continue
                     
+                    # 跳过有 .skip 标记的目录
+                    if (item / '.skip').exists():
+                        self.logger.debug(f"跳过标记目录: {item}")
+                        continue
+                    
                     # 检查是否包含 SKILL.md
                     has_skill_md = self._has_skill_md(item)
                     if not has_skill_md:
