@@ -20,28 +20,34 @@ from fetch_news import fetch_and_format
 
 def send_to_dingtalk(content: str, push_sender_path: str = None) -> bool:
     """发送消息到钉钉
-    
+
     Args:
         content: 消息内容
         push_sender_path: push_sender.py 脚本路径
-    
+
     Returns:
         bool: 是否发送成功
     """
     if not push_sender_path:
         return False
-    
+
     try:
-        # 调用 push_sender.py
+        # 通过 stdin 传递内容，避免命令行参数长度限制和转义问题
         result = subprocess.run(
-            [sys.executable, push_sender_path, content],
+            [sys.executable, push_sender_path],
+            input=content,
             capture_output=True,
             text=True,
             timeout=30
         )
-        
-        return result.returncode == 0
-    
+
+        if result.returncode == 0:
+            print(f"钉钉推送成功: {result.stdout.strip()}")
+            return True
+        else:
+            print(f"钉钉推送失败: {result.stderr.strip()}")
+            return False
+
     except Exception as e:
         print(f"发送钉钉失败: {e}")
         return False
