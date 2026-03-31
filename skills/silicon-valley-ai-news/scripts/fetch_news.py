@@ -9,9 +9,14 @@ import json
 import re
 import urllib.request
 import asyncio
+import time
+import html
 from datetime import datetime, timedelta
 from pathlib import Path
 import concurrent.futures
+import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
+from datetime import timezone
 
 # 默认配置
 DEFAULT_SENT_FILE = None  # None 表示不持久化（每次都返回所有新闻）
@@ -19,7 +24,7 @@ DEFAULT_TOP_N = 10
 DEFAULT_HOURS = 24
 DEFAULT_TRANSLATE = True  # 默认翻译成中文
 
-# 新闻源配置（只保留可用的 RSS 源）
+# 新闻源配置
 NEWS_SOURCES = {
     # 一级源 - AI巨头官方
     "OpenAI": "https://openai.com/blog/rss.xml",
@@ -27,30 +32,104 @@ NEWS_SOURCES = {
     "DeepMind": "https://deepmind.com/blog/feed",
     "Microsoft AI": "https://blogs.microsoft.com/ai/feed/",
     "NVIDIA": "https://blogs.nvidia.com/feed/",
+    "AWS ML Blog": "https://aws.amazon.com/blogs/machine-learning/feed/",
+    "Engineering at Meta": "https://engineering.fb.com/feed/",
     
     # 二级源 - 权威科技媒体
-    "Wired AI": "https://www.wired.com/feed/tag/ai/latest/rss",
     "TechCrunch AI": "https://techcrunch.com/category/artificial-intelligence/feed/",
+    "Wired AI": "https://www.wired.com/feed/tag/ai/latest/rss",
+    "VentureBeat AI": "https://venturebeat.com/category/ai/feed/",
+    "MIT Tech Review": "https://www.technologyreview.com/feed/",
+    "MIT News AI": "https://news.mit.edu/rss/topic/artificial-intelligence2",
+    "IEEE Spectrum AI": "https://spectrum.ieee.org/customfeeds/feed/all-topics/rss",
+    "Ars Technica": "https://feeds.arstechnica.com/arstechnica/technology-lab",
+    "The Verge AI": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
+    "Cloudflare AI": "https://blog.cloudflare.com/tag/ai/rss/",
     
-    # 三级源 - 技术/学习社区
+    # 三级源 - 技术社区
+    "Hacker News AI": "https://hnrss.org/newest?q=AI+OR+LLM+OR+GPT+OR+OpenAI+OR+machine+learning",
     "KDnuggets": "https://www.kdnuggets.com/feed",
     "Analytics Vidhya": "https://www.analyticsvidhya.com/feed/",
 }
 
 
-def fetch_url(url, timeout=10):
-    """获取URL内容"""
-    try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            return response.read().decode('utf-8')
-    except Exception as e:
-        print(f"获取失败 {url}: {e}")
-        return None
+SOURCE_TIMEOUTS = {
+    "Google AI": 18,  # 这些源在部分网络下响应偏慢
+    "Wired AI": 18,
+    "IEEE Spectrum AI": 18,
+}
 
 
-def parse_rss(xml_content, source_name):
-    """解析RSS - 使用正则表达式避免命名空间问题"""
+def fetch_url(url, timeout=15, retries=2):
+    """获取 URL 内容（含重试）"""
+    for attempt in range(retries + 1):
+        try:
+            # 使用完整的浏览器 User-Agent，避免被反爬虫拦截
+            req = urllib.request.Request(url, headers={
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+                'Accept-Language': 'en-US,en;q=0.9',
+            })
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                return response.read().decode('utf-8', errors='replace')
+        except Exception as e:
+            if attempt >= retries:
+                print(f"获取失败 {url}: {e}")
+                return None
+            # 轻量退避，降低瞬时波动带来的漏抓
+            time.sleep(0.6 * (attempt + 1))
+    return None
+
+
+def _strip_ns(tag):
+    return tag.split('}', 1)[-1].lower() if tag else ""
+
+
+def _first_text(entry, candidate_tags):
+    for child in entry:
+        if _strip_ns(child.tag) in candidate_tags:
+            text = ''.join(child.itertext()).strip()
+            if text:
+                return text
+    return ""
+
+
+def _extract_link(entry):
+    """兼容 RSS/Atom 的链接提取"""
+    rss_link = ""
+    atom_alt_href = ""
+    atom_any_href = ""
+
+    for child in entry:
+        if _strip_ns(child.tag) != 'link':
+            continue
+        text_link = ''.join(child.itertext()).strip()
+        if text_link and not rss_link:
+            rss_link = text_link
+        href = (child.attrib.get('href') or '').strip()
+        rel = (child.attrib.get('rel') or '').strip().lower()
+        if href:
+            if rel == 'alternate' and not atom_alt_href:
+                atom_alt_href = href
+            if not atom_any_href:
+                atom_any_href = href
+
+    return rss_link or atom_alt_href or atom_any_href
+
+
+def _clean_desc(text):
+    if not text:
+        return ""
+    text = html.unescape(text)
+    text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    if len(text) > 200:
+        text = text[:200] + "..."
+    return text
+
+
+def _parse_rss_with_regex(xml_content, source_name):
+    """正则兜底解析（兼容旧逻辑）"""
     if not xml_content:
         return []
     
@@ -117,8 +196,48 @@ def parse_rss(xml_content, source_name):
         
         return results
     except Exception as e:
-        print(f"解析失败 {source_name}: {e}")
+        print(f"正则解析失败 {source_name}: {e}")
         return []
+
+
+def parse_rss(xml_content, source_name):
+    """解析 RSS/Atom：优先 XML，失败回退正则"""
+    if not xml_content:
+        return []
+
+    try:
+        normalized_xml = re.sub(r'<!DOCTYPE[^>]*>', '', xml_content)
+        root = ET.fromstring(normalized_xml)
+        results = []
+
+        for entry in root.iter():
+            tag = _strip_ns(entry.tag)
+            if tag not in ("item", "entry"):
+                continue
+
+            title_text = _first_text(entry, {"title"})
+            link_text = _extract_link(entry)
+            date_text = _first_text(entry, {"pubdate", "published", "updated", "date"})
+            desc_text = _first_text(entry, {"description", "summary", "encoded", "content"})
+            desc_text = _clean_desc(desc_text)
+
+            if not title_text or not link_text:
+                continue
+
+            results.append({
+                'title': html.unescape(title_text),
+                'link': link_text,
+                'date': date_text,
+                'description': desc_text,
+                'source': source_name
+            })
+
+        if results:
+            return results
+    except Exception:
+        pass
+
+    return _parse_rss_with_regex(xml_content, source_name)
 
 
 def convert_to_beijing_time(date_str):
@@ -131,9 +250,8 @@ def convert_to_beijing_time(date_str):
         
         # RFC 2822 格式
         try:
-            from email.utils import parsedate_to_datetime
             dt = parsedate_to_datetime(date_str)
-            dt = dt.astimezone(timedelta(hours=8))
+            dt = dt.astimezone(timezone(timedelta(hours=8)))
             return dt.strftime('%Y年%m月%d日 %H:%M')
         except:
             pass
@@ -143,7 +261,7 @@ def convert_to_beijing_time(date_str):
             if 'T' in date_str:
                 dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
                 if dt.tzinfo:
-                    dt = dt.astimezone(timedelta(hours=8))
+                    dt = dt.astimezone(timezone(timedelta(hours=8)))
                 return dt.strftime('%Y年%m月%d日 %H:%M')
         except:
             pass
@@ -176,6 +294,21 @@ def filter_ai_news(items):
             filtered.append(item)
     
     return filtered
+
+
+def is_hacker_news_item(item):
+    """判断是否是 Hacker News 类型的条目（摘要不是真正内容）"""
+    desc = item.get('description', '')
+    return 'Article URL:' in desc and 'Comments URL:' in desc
+
+
+def extract_real_link_from_hn(item):
+    """从 Hacker News 条目中提取真正的文章链接"""
+    desc = item.get('description', '')
+    match = re.search(r'Article URL:\s*(\S+)', desc)
+    if match:
+        return match.group(1)
+    return item.get('link', '')
 
 
 def load_news_records(sent_file):
@@ -222,7 +355,7 @@ def _make_record(item, status):
         "title": item.get("title", ""),
         "source": item.get("source", ""),
         "date": item.get("date", ""),
-        "recorded_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 
 
@@ -311,6 +444,58 @@ def batch_translate_to_chinese(items: list, llm_provider=None) -> list:
     return items
 
 
+def generate_missing_summaries(items: list, llm_provider=None) -> list:
+    """为缺少摘要的新闻生成一句话摘要
+    
+    Args:
+        items: 新闻列表
+        llm_provider: LLM provider 实例
+    
+    Returns:
+        处理后的新闻列表
+    """
+    if not items or not llm_provider:
+        return items
+    
+    # 找出缺少摘要的条目
+    missing_indices = []
+    lines = []
+    for i, news in enumerate(items):
+        if not news.get('description') or news['description'] == '暂无':
+            missing_indices.append(i)
+            lines.append(f"{i}: {news['title']}")
+    
+    if not lines:
+        return items
+    
+    try:
+        from skill_service.llm.provider import LLMMessage
+        
+        prompt = (
+            "请为以下新闻标题生成一句话摘要（15-30字中文），格式为'编号: 摘要'，每行一条：\n\n"
+            + "\n".join(lines)
+        )
+        messages = [LLMMessage(role="user", content=prompt)]
+        
+        response = _run_async(llm_provider.chat(messages, max_tokens=1000))
+        
+        if not (response and response.content):
+            return items
+        
+        # 解析结果
+        for line in response.content.strip().splitlines():
+            m = re.match(r'^(\d+):\s*(.+)$', line.strip())
+            if m:
+                idx = int(m.group(1))
+                if idx in missing_indices:
+                    items[idx]['description'] = m.group(2).strip()
+    
+    except Exception as e:
+        print(f"生成摘要失败: {e}")
+    
+    return items
+
+
 def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, translate=DEFAULT_TRANSLATE, llm_provider=None):
     """抓取并格式化 AI 新闻
     
@@ -341,7 +526,15 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
     
     # 并行获取所有新闻源
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(fetch_url, url, 10): name for name, url in NEWS_SOURCES.items()}
+        futures = {
+            executor.submit(
+                fetch_url,
+                url,
+                SOURCE_TIMEOUTS.get(name, 12),
+                2
+            ): name
+            for name, url in NEWS_SOURCES.items()
+        }
         
         for future in concurrent.futures.as_completed(futures):
             name = futures[future]
@@ -361,34 +554,39 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
     
     # 加载已有记录
     records = load_news_records(sent_file) if sent_file else {}
-    # 已处理过的 URL 集合（无论什么状态，都跳过）
-    known_urls = set(records.keys())
+    # 只对已发送的记录去重（其他状态仅用于统计，不影响新新闻发现）
+    sent_urls = {url for url, rec in records.items() if rec.get("status") == "sent"}
 
     # ── 阶段 1：AI 关键词过滤 ──────────────────────────────────────
     ai_news = filter_ai_news(all_news)
     ai_urls = {n['link'] for n in ai_news}
     print(f"AI相关新闻: {len(ai_news)} 条")
 
-    # 记录被 AI 关键词过滤掉的（且之前没见过的）
+    # 记录被 AI 关键词过滤掉的（可选，用于统计）
+    # 注意：这些记录不影响去重，仅用于分析
     if sent_file:
         for item in all_news:
             url = item.get('link', '')
-            if url and url not in known_urls and url not in ai_urls:
+            if url and url not in records and url not in ai_urls:
                 records[url] = _make_record(item, "filtered_ai")
-                known_urls.add(url)
 
     # ── 阶段 2：时间窗口过滤 ──────────────────────────────────────
     if hours > 0:
-        cutoff_time = datetime.utcnow() - timedelta(hours=hours)
-        from email.utils import parsedate_to_datetime
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
 
         def is_recent(item):
             date_str = item.get('date', '')
             if not date_str:
                 return True
             try:
-                dt = parsedate_to_datetime(date_str[:50])
-                return dt.timestamp() >= cutoff_time.timestamp()
+                short = date_str[:50]
+                try:
+                    dt = parsedate_to_datetime(short)
+                except Exception:
+                    dt = datetime.fromisoformat(short.replace('Z', '+00:00'))
+                if dt.tzinfo:
+                    return dt.timestamp() >= cutoff_time.timestamp()
+                return dt.replace(tzinfo=timezone.utc) >= cutoff_time
             except:
                 return True
 
@@ -396,18 +594,17 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
         recent_urls = {n['link'] for n in recent_news}
         print(f"最近 {hours} 小时内的新闻: {len(recent_news)} 条")
 
-        # 记录超出时间窗口的
+        # 记录超出时间窗口的（可选，用于统计）
         if sent_file:
             for item in ai_news:
                 url = item.get('link', '')
-                if url and url not in known_urls and url not in recent_urls:
+                if url and url not in records and url not in recent_urls:
                     records[url] = _make_record(item, "filtered_time")
-                    known_urls.add(url)
     else:
         recent_news = ai_news
 
-    # ── 阶段 3：去重（跳过已知 URL）──────────────────────────────
-    new_news = [n for n in recent_news if n['link'] not in known_urls]
+    # ── 阶段 3：去重（只跳过已发送的）──────────────────────────────
+    new_news = [n for n in recent_news if n['link'] not in sent_urls]
     print(f"新增新闻: {len(new_news)} 条")
     
     if not new_news:
@@ -449,36 +646,62 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
     if sent_file and overflow:
         for item in overflow:
             url = item.get('link', '')
-            if url and url not in known_urls:
+            if url and url not in records:
                 records[url] = _make_record(item, "overflow")
-                known_urls.add(url)
     
-    # ── 阶段 6：翻译 ─────────────────────────────────────────────
+    # ── 阶段 6：清理摘要 ─────────────────────────────────────────────
+    for news in selected:
+        desc = news.get('description', '')
+        # Hacker News 类型的条目，摘要不是真正内容
+        if is_hacker_news_item(news):
+            real_link = extract_real_link_from_hn(news)
+            if real_link != news.get('link'):
+                news['link'] = real_link
+            news['description'] = ''  # 清空无效摘要
+        # 清理摘要中的 HTML 标签和多余空白
+        elif desc:
+            desc = re.sub(r'<[^>]+>', '', desc)
+            desc = re.sub(r'\s+', ' ', desc).strip()
+            if len(desc) > 200:
+                desc = desc[:200] + '...'
+            news['description'] = desc
+    
+    # ── 阶段 7：翻译 ─────────────────────────────────────────────
     if translate and llm_provider:
         print(f"正在批量翻译 {len(selected)} 条新闻...")
         selected = batch_translate_to_chinese(selected, llm_provider)
+    
+    # ── 阶段 8：生成缺失摘要 ─────────────────────────────────────
+    if llm_provider:
+        missing_count = sum(1 for n in selected if not n.get('description'))
+        if missing_count > 0:
+            print(f"正在为 {missing_count} 条新闻生成摘要...")
+            selected = generate_missing_summaries(selected, llm_provider)
     
     # ── 格式化输出 ────────────────────────────────────────────────
     output = "## 🤖 硅谷AI最新动态\n\n"
     
     for i, news in enumerate(selected, 1):
-        beijing_time = convert_to_beijing_time(news['date'])
-        output += f"### {i}. {news['title']}\n\n"
-        output += f"**摘要**：{news['description'] if news['description'] else '暂无'}\n\n"
-        output += f"**时间**：{beijing_time} (北京时间)\n\n"
-        output += f"**来源**：{news['source']}\n\n"
-        output += f"**链接地址**：[{news['link']}]({news['link']})\n\n"
-        output += "---\n\n"
+        title = news.get('title', '无标题')
+        desc = news.get('description', '')
+        date_str = news.get('date', '')
+        link = news.get('link', '')
+        source = news.get('source', '未知来源')
+        
+        beijing_time = convert_to_beijing_time(date_str) if date_str else '未知时间'
+        
+        output += f"{i}. **{title}**\n"
+        output += f"   - 摘要：{desc if desc else '暂无'}\n"
+        output += f"   - 时间：{beijing_time}\n"
+        output += f"   - 来源：{source}\n"
+        output += f"   - 链接：{link}\n\n"
     
-    # ── 保存记录（sent 状态） ─────────────────────────────────────
-    if sent_file:
-        for item in selected:
-            url = item.get('link', '')
-            if url:
-                records[url] = _make_record(item, "sent")
-        save_news_records(records, sent_file)
-        sent_count = sum(1 for r in records.values() if r.get("status") == "sent")
-        print(f"已更新记录，共 {len(records)} 条（已发送 {sent_count} 条）")
+    # ── 返回结果（不在这里标记 sent，由调用方发送成功后手动标记）────
+    # 返回完整的 selected 新闻列表，供发送成功后标记 sent 使用
+    selected_for_mark = [
+        {"link": item.get('link', ''), "title": item.get('title', ''), "source": item.get('source', '')}
+        for item in selected if item.get('link')
+    ]
     
     return {
         "success": True,
@@ -489,8 +712,38 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
             "recent": len(recent_news),
             "new": len(new_news),
             "selected": len(selected)
-        }
+        },
+        "selected_for_mark": selected_for_mark  # 供外部标记 sent 使用
     }
+
+
+def mark_as_sent(news_items: list, sent_file: str = None) -> dict:
+    """
+    将新闻标记为已发送状态。
+    在钉钉/本地 API 发送成功后调用。
+    
+    Args:
+        news_items: 新闻列表，每项需包含 link 字段
+        sent_file: sent.json 文件路径
+    
+    Returns:
+        dict: 标记结果
+    """
+    if not sent_file:
+        return {"success": False, "message": "未指定 sent_file"}
+    
+    records = load_news_records(sent_file)
+    
+    for item in news_items:
+        url = item.get('link', '')
+        if url:
+            records[url] = _make_record(item, "sent")
+    
+    save_news_records(records, sent_file)
+    sent_count = sum(1 for r in records.values() if r.get("status") == "sent")
+    print(f"已标记为 sent，共 {len(records)} 条记录（已发送 {sent_count} 条）")
+    
+    return {"success": True, "marked_count": len(news_items)}
 
 
 def main():

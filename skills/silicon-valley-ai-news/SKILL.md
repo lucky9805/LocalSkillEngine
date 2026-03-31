@@ -15,10 +15,19 @@ description: 实时监控硅谷 AI 领域热门新闻和产品发布，聚合 Op
 - DeepMind: https://deepmind.com/blog/feed
 - Microsoft AI: https://blogs.microsoft.com/ai/feed/
 - NVIDIA: https://blogs.nvidia.com/feed/
+- AWS ML Blog: https://aws.amazon.com/blogs/machine-learning/feed/
+- Engineering at Meta: https://engineering.fb.com/feed/
 
 ### 二级源（权威科技媒体）
 - TechCrunch AI: https://techcrunch.com/category/artificial-intelligence/feed/
 - Wired AI: https://www.wired.com/feed/tag/ai/latest/rss
+- VentureBeat AI: https://venturebeat.com/category/ai/feed/
+- MIT Tech Review: https://www.technologyreview.com/feed/
+- MIT News AI: https://news.mit.edu/rss/topic/artificial-intelligence2
+- IEEE Spectrum AI: https://spectrum.ieee.org/customfeeds/feed/all-topics/rss
+- Ars Technica: https://feeds.arstechnica.com/arstechnica/technology-lab
+- The Verge AI: https://www.theverge.com/rss/ai-artificial-intelligence/index.xml
+- Cloudflare AI: https://blog.cloudflare.com/tag/ai/rss/
 
 ### 三级源（技术社区）
 - KDnuggets: https://www.kdnuggets.com/feed
@@ -27,7 +36,7 @@ description: 实时监控硅谷 AI 领域热门新闻和产品发布，聚合 Op
 ## 参数
 
 - `top_n` (可选): 返回前 N 条新闻，默认 `10`
-- `hours` (可选): 过滤最近 N 小时的新闻，默认 `12`
+- `hours` (可选): 过滤最近 N 小时的新闻，默认 `24`
 - `sent_file` (可选): 已发送新闻记录文件路径（相对路径），默认 `memory/sent.json`（自动开启去重）
   - 设置为空字符串 `""` 可以禁用去重，每次返回所有新闻
 - `translate` (可选): 是否翻译成中文，默认 `true`（需要 LLM 支持）
