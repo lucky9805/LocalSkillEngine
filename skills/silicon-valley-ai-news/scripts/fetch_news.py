@@ -17,6 +17,7 @@ import concurrent.futures
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 from datetime import timezone
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 # 默认配置
 DEFAULT_SENT_FILE = None  # None 表示不持久化（每次都返回所有新闻）
@@ -280,6 +281,36 @@ def _normalize_hn_link(item):
     return item
 
 
+def _canonicalize_url(url: str) -> str:
+    """规范化 URL，用于稳定去重键"""
+    if not url:
+        return ""
+    try:
+        u = url.strip()
+        if not u:
+            return ""
+
+        parts = urlsplit(u)
+        scheme = (parts.scheme or "https").lower()
+        netloc = parts.netloc.lower()
+        path = parts.path or "/"
+        if path != "/":
+            path = path.rstrip("/")
+
+        # 去掉常见追踪参数，降低同一新闻多 URL 形态导致的重复推送
+        drop_params = {
+            "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+            "gclid", "fbclid", "mc_cid", "mc_eid", "igshid"
+        }
+        q = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=False) if k.lower() not in drop_params]
+        query = urlencode(q, doseq=True)
+
+        # 去 fragment
+        return urlunsplit((scheme, netloc, path, query, ""))
+    except Exception:
+        return url.strip()
+
+
 def convert_to_beijing_time(date_str):
     """转换为北京时间"""
     if not date_str:
@@ -395,6 +426,7 @@ def _make_record(item, status):
         "title": item.get("title", ""),
         "source": item.get("source", ""),
         "date": item.get("date", ""),
+        "url": item.get("link", ""),
         "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 
@@ -594,22 +626,28 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
 
     # 统一规范化链接（尤其是 Hacker News 条目），保证后续去重键一致
     all_news = [_normalize_hn_link(item) for item in all_news]
+    for item in all_news:
+        item["_dedupe_key"] = _canonicalize_url(item.get("link", ""))
     
     # 加载已有记录
     records = load_news_records(sent_file) if sent_file else {}
-    # 只对已发送的记录去重（其他状态仅用于统计，不影响新新闻发现）
-    sent_urls = {url for url, rec in records.items() if rec.get("status") == "sent"}
+    # 对已发送/已选中的记录都去重，避免连续两次输出相同内容
+    dedupe_keys = {
+        _canonicalize_url(url)
+        for url, rec in records.items()
+        if rec.get("status") in {"sent", "selected"}
+    }
 
     # ── 阶段 1：AI 关键词过滤 ──────────────────────────────────────
     ai_news = filter_ai_news(all_news)
-    ai_urls = {n['link'] for n in ai_news}
+    ai_urls = {n.get('_dedupe_key', '') for n in ai_news}
     print(f"AI相关新闻: {len(ai_news)} 条")
 
     # 记录被 AI 关键词过滤掉的（可选，用于统计）
     # 注意：这些记录不影响去重，仅用于分析
     if sent_file:
         for item in all_news:
-            url = item.get('link', '')
+            url = item.get('_dedupe_key', '')
             if url and url not in records and url not in ai_urls:
                 records[url] = _make_record(item, "filtered_ai")
 
@@ -632,20 +670,20 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
                 return True
 
         recent_news = [n for n in ai_news if is_recent(n)]
-        recent_urls = {n['link'] for n in recent_news}
+        recent_urls = {n.get('_dedupe_key', '') for n in recent_news}
         print(f"最近 {hours} 小时内的新闻: {len(recent_news)} 条")
 
         # 记录超出时间窗口的（可选，用于统计）
         if sent_file:
             for item in ai_news:
-                url = item.get('link', '')
+                url = item.get('_dedupe_key', '')
                 if url and url not in records and url not in recent_urls:
                     records[url] = _make_record(item, "filtered_time")
     else:
         recent_news = ai_news
 
     # ── 阶段 3：去重（只跳过已发送的）──────────────────────────────
-    new_news = [n for n in recent_news if n['link'] not in sent_urls]
+    new_news = [n for n in recent_news if n.get('_dedupe_key', '') not in dedupe_keys]
     print(f"新增新闻: {len(new_news)} 条")
     
     if not new_news:
@@ -686,7 +724,7 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
 
     if sent_file and overflow:
         for item in overflow:
-            url = item.get('link', '')
+            url = item.get('_dedupe_key', '')
             if url and url not in records:
                 records[url] = _make_record(item, "overflow")
     
@@ -742,6 +780,16 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
         {"link": item.get('link', ''), "title": item.get('title', ''), "source": item.get('source', '')}
         for item in selected if item.get('link')
     ]
+
+    # 默认将本次选中的新闻记录为 selected，确保下次不会重复产出
+    if sent_file:
+        for item in selected:
+            key = item.get('_dedupe_key', '')
+            if key:
+                prev = records.get(key, {})
+                if prev.get("status") != "sent":
+                    records[key] = _make_record(item, "selected")
+        save_news_records(records, sent_file)
     
     return {
         "success": True,
@@ -776,8 +824,9 @@ def mark_as_sent(news_items: list, sent_file: str = None) -> dict:
     
     for item in news_items:
         url = item.get('link', '')
-        if url:
-            records[url] = _make_record(item, "sent")
+        key = _canonicalize_url(url)
+        if key:
+            records[key] = _make_record(item, "sent")
     
     save_news_records(records, sent_file)
     sent_count = sum(1 for r in records.values() if r.get("status") == "sent")
