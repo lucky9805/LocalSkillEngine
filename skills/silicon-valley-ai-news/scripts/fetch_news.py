@@ -686,15 +686,13 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
         desc = news.get('description', '')
         date_str = news.get('date', '')
         link = news.get('link', '')
-        source = news.get('source', '未知来源')
         
         beijing_time = convert_to_beijing_time(date_str) if date_str else '未知时间'
         
-        output += f"{i}. **{title}**\n"
-        output += f"   - 摘要：{desc if desc else '暂无'}\n"
-        output += f"   - 时间：{beijing_time}\n"
-        output += f"   - 来源：{source}\n"
-        output += f"   - 链接：{link}\n\n"
+        output += f"## {i}.{title}\n"
+        output += f"**摘要**：{desc if desc else '暂无'}\n\n"
+        output += f"**时间**：{beijing_time}\n\n"
+        output += f"**链接**：[{link}]({link})\n\n"
     
     # ── 返回结果（不在这里标记 sent，由调用方发送成功后手动标记）────
     # 返回完整的 selected 新闻列表，供发送成功后标记 sent 使用
