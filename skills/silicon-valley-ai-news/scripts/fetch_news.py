@@ -210,10 +210,24 @@ def parse_rss(xml_content, source_name):
         root = ET.fromstring(normalized_xml)
         results = []
 
-        for entry in root.iter():
-            tag = _strip_ns(entry.tag)
-            if tag not in ("item", "entry"):
-                continue
+        root_tag = _strip_ns(root.tag)
+        entries = []
+
+        if root_tag in ("rss", "rdf"):
+            channel = None
+            for child in root:
+                if _strip_ns(child.tag) == "channel":
+                    channel = child
+                    break
+            if channel is not None:
+                entries = [node for node in channel if _strip_ns(node.tag) == "item"]
+        elif root_tag == "feed":
+            entries = [node for node in root if _strip_ns(node.tag) == "entry"]
+        else:
+            # 未知结构时保守处理，避免整树扫描引入误抓
+            return _parse_rss_with_regex(xml_content, source_name)
+
+        for entry in entries:
 
             title_text = _first_text(entry, {"title"})
             link_text = _extract_link(entry)
@@ -238,6 +252,32 @@ def parse_rss(xml_content, source_name):
         pass
 
     return _parse_rss_with_regex(xml_content, source_name)
+
+
+def _parse_news_datetime(date_str):
+    """解析新闻时间，兼容 RFC 2822 / ISO 8601"""
+    if not date_str:
+        return None
+    short = date_str.strip()[:50]
+    if not short:
+        return None
+    try:
+        return parsedate_to_datetime(short)
+    except Exception:
+        pass
+    try:
+        return datetime.fromisoformat(short.replace('Z', '+00:00'))
+    except Exception:
+        return None
+
+
+def _normalize_hn_link(item):
+    """统一 Hacker News 条目链接为文章真实链接，避免去重键不一致"""
+    if item.get('source') == "Hacker News AI" or is_hacker_news_item(item):
+        real_link = extract_real_link_from_hn(item)
+        if real_link:
+            item['link'] = real_link
+    return item
 
 
 def convert_to_beijing_time(date_str):
@@ -551,6 +591,9 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
                 print(f"  ✗ {name}: {e}")
     
     print(f"\n共获取 {len(all_news)} 条新闻")
+
+    # 统一规范化链接（尤其是 Hacker News 条目），保证后续去重键一致
+    all_news = [_normalize_hn_link(item) for item in all_news]
     
     # 加载已有记录
     records = load_news_records(sent_file) if sent_file else {}
@@ -579,11 +622,9 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
             if not date_str:
                 return True
             try:
-                short = date_str[:50]
-                try:
-                    dt = parsedate_to_datetime(short)
-                except Exception:
-                    dt = datetime.fromisoformat(short.replace('Z', '+00:00'))
+                dt = _parse_news_datetime(date_str)
+                if not dt:
+                    return True
                 if dt.tzinfo:
                     return dt.timestamp() >= cutoff_time.timestamp()
                 return dt.replace(tzinfo=timezone.utc) >= cutoff_time
@@ -628,10 +669,10 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
     def sort_key(item):
         src_prio = priority.get(item['source'], 999)
         try:
-            date_str = item.get('date', '')[:50]
-            if date_str:
-                from email.utils import parsedate_to_datetime
-                dt = parsedate_to_datetime(date_str)
+            dt = _parse_news_datetime(item.get('date', ''))
+            if dt:
+                if not dt.tzinfo:
+                    dt = dt.replace(tzinfo=timezone.utc)
                 return (src_prio, -dt.timestamp())
         except:
             pass
@@ -692,6 +733,7 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
         output += f"## {i}.{title}\n"
         output += f"**摘要**：{desc if desc else '暂无'}\n\n"
         output += f"**时间**：{beijing_time}\n\n"
+        output += f"**来源**：{news.get('source', '未知来源')}\n\n"
         output += f"**链接**：[{link}]({link})\n\n"
     
     # ── 返回结果（不在这里标记 sent，由调用方发送成功后手动标记）────

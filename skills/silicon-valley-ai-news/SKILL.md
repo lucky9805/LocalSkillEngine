@@ -95,4 +95,4 @@ skill-service run silicon-valley-ai-news --param sent_file=cache/news.json
 
 > **注意**：
 > - 去重已默认开启，无需手动配置 `sent_file` 参数
-> - 钉钉推送需要 `../../tools/push_sender.py` 配置好 WEBHOOK_URL 和 SECRET
+> - 钉钉推送需要 `../../shared/push_sender.py` 配置好 WEBHOOK_URL 和 SECRET
