@@ -18,6 +18,7 @@ import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 from datetime import timezone
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+import hashlib
 
 # 默认配置
 DEFAULT_SENT_FILE = None  # None 表示不持久化（每次都返回所有新闻）
@@ -311,6 +312,85 @@ def _canonicalize_url(url: str) -> str:
         return url.strip()
 
 
+def _normalize_title(title: str) -> str:
+    """规范化标题用于相似度比较：小写、去除标点、去除多余空格"""
+    import unicodedata
+    # Unicode 正规化 + 小写
+    text = unicodedata.normalize('NFKC', title).lower()
+    # 去除常见标点和格式字符
+    text = re.sub(r'[\'`\"\'\"\u2018\u2019\u201c\u201d]', '', text)
+    # 去除HTML实体
+    text = re.sub(r'&[a-z]+;', ' ', text)
+    text = re.sub(r'&#\d+;', ' ', text)
+    # 去除数字和百分号（版本号、分数等容易变化）
+    text = re.sub(r'\s*\d+[\.\d]*\s*', ' ', text)
+    # 去除多余空格
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def _news_fingerprint(item: dict) -> str:
+    """
+    内容指纹（跨轮次兜底去重）
+    由 source + 规范化标题 + 日期桶 组成，容忍 URL 轻微变化。
+    """
+    source = (item.get("source") or "").strip().lower()
+    title = _normalize_title(item.get("title", ""))
+    date_str = (item.get("date") or "").strip()
+    date_bucket = date_str[:10] if date_str else ""
+    raw = f"{source}|{title}|{date_bucket}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _title_similarity(t1: str, t2: str) -> float:
+    """计算两个标题的相似度（0~1），基于字符级 Jaccard"""
+    if not t1 or not t2:
+        return 0.0
+    words1 = set(t1.split())
+    words2 = set(t2.split())
+    if not words1 or not words2:
+        return 0.0
+    intersection = len(words1 & words2)
+    union = len(words1 | words2)
+    return intersection / union if union > 0 else 0.0
+
+
+def filter_duplicate_titles(news_items: list, known_titles: set, threshold: float = 0.6) -> list:
+    """
+    基于标题相似度去重。
+    如果一条新闻的规范化标题与已知标题集合的相似度 >= threshold，则过滤掉。
+    
+    Args:
+        news_items: 待过滤的新闻列表
+        known_titles: 已知的规范化标题集合
+        threshold: 相似度阈值（默认 0.6）
+    
+    Returns:
+        过滤后的新闻列表（保留的条目）
+    """
+    kept = []
+    for item in news_items:
+        title = item.get('title', '')
+        norm = _normalize_title(title)
+        if not norm:
+            kept.append(item)
+            continue
+        
+        is_duplicate = False
+        for known in known_titles:
+            if _title_similarity(norm, known) >= threshold:
+                is_duplicate = True
+                break
+        
+        if not is_duplicate:
+            kept.append(item)
+            known_titles.add(norm)
+        else:
+            print(f"  [去重-标题] {title[:60]}...")
+    
+    return kept
+
+
 def convert_to_beijing_time(date_str):
     """转换为北京时间"""
     if not date_str:
@@ -427,6 +507,7 @@ def _make_record(item, status):
         "source": item.get("source", ""),
         "date": item.get("date", ""),
         "url": item.get("link", ""),
+        "fingerprint": item.get("_fingerprint", ""),
         "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 
@@ -628,6 +709,7 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
     all_news = [_normalize_hn_link(item) for item in all_news]
     for item in all_news:
         item["_dedupe_key"] = _canonicalize_url(item.get("link", ""))
+        item["_fingerprint"] = _news_fingerprint(item)
     
     # 加载已有记录
     records = load_news_records(sent_file) if sent_file else {}
@@ -637,6 +719,13 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
         for url, rec in records.items()
         if rec.get("status") in {"sent", "selected"}
     }
+    dedupe_fingerprints = {
+        (rec.get("fingerprint") or "").strip()
+        for rec in records.values()
+        if rec.get("status") in {"sent", "selected"} and rec.get("fingerprint")
+    }
+    # 从已有记录中提取已知标题（用于标题相似度去重）
+    known_norm_titles = {_normalize_title(rec.get("title", "")) for rec in records.values() if rec.get("title")}
 
     # ── 阶段 1：AI 关键词过滤 ──────────────────────────────────────
     ai_news = filter_ai_news(all_news)
@@ -682,8 +771,19 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
     else:
         recent_news = ai_news
 
-    # ── 阶段 3：去重（只跳过已发送的）──────────────────────────────
-    new_news = [n for n in recent_news if n.get('_dedupe_key', '') not in dedupe_keys]
+    # ── 阶段 3：URL+指纹去重（跳过已发送/已选中的）────────────────────
+    new_news = []
+    for n in recent_news:
+        key = n.get('_dedupe_key', '')
+        fp = n.get('_fingerprint', '')
+        key_dup = bool(key) and key in dedupe_keys
+        fp_dup = bool(fp) and fp in dedupe_fingerprints
+        if not key_dup and not fp_dup:
+            new_news.append(n)
+    print(f"URL+指纹去重后: {len(new_news)} 条")
+
+    # ── 阶段 3.5：标题相似度去重（同一新闻多来源报道）────────────────
+    new_news = filter_duplicate_titles(new_news, known_norm_titles, threshold=0.65)
     print(f"新增新闻: {len(new_news)} 条")
     
     if not new_news:
@@ -725,8 +825,10 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
     if sent_file and overflow:
         for item in overflow:
             url = item.get('_dedupe_key', '')
-            if url and url not in records:
-                records[url] = _make_record(item, "overflow")
+            fp = item.get('_fingerprint', '')
+            rec_key = url or (f"fp:{fp}" if fp else "")
+            if rec_key and rec_key not in records:
+                records[rec_key] = _make_record(item, "overflow")
     
     # ── 阶段 6：清理摘要 ─────────────────────────────────────────────
     for news in selected:
@@ -785,10 +887,12 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
     if sent_file:
         for item in selected:
             key = item.get('_dedupe_key', '')
-            if key:
-                prev = records.get(key, {})
+            fp = item.get('_fingerprint', '')
+            rec_key = key or (f"fp:{fp}" if fp else "")
+            if rec_key:
+                prev = records.get(rec_key, {})
                 if prev.get("status") != "sent":
-                    records[key] = _make_record(item, "selected")
+                    records[rec_key] = _make_record(item, "selected")
         save_news_records(records, sent_file)
     
     return {
@@ -825,8 +929,12 @@ def mark_as_sent(news_items: list, sent_file: str = None) -> dict:
     for item in news_items:
         url = item.get('link', '')
         key = _canonicalize_url(url)
-        if key:
-            records[key] = _make_record(item, "sent")
+        fp = _news_fingerprint(item)
+        rec_key = key or (f"fp:{fp}" if fp else "")
+        if rec_key:
+            rec_item = dict(item)
+            rec_item["_fingerprint"] = fp
+            records[rec_key] = _make_record(rec_item, "sent")
     
     save_news_records(records, sent_file)
     sent_count = sum(1 for r in records.values() if r.get("status") == "sent")

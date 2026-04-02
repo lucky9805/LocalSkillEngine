@@ -19,21 +19,31 @@ import json
 import os
 
 # ── 钉钉配置 ──────────────────────────────────────────────────────────────────
-# WEBHOOK_URL = (
-#     "https://oapi.dingtalk.com/robot/send"
-#     "?access_token=2ec68f2981f5a4776a959c3d2b2025964e936cb81015b572f929b893a19d501e"
-# )
-# SECRET = "SEC0218e8c8744d9e4ea4c7138be7dc2847a7ac4faad039e45d74efa72e96c985cf"
+WEBHOOK_URL = (
+    "https://oapi.dingtalk.com/robot/send"
+    "?access_token=2ec68f2981f5a4776a959c3d2b2025964e936cb81015b572f929b893a19d501e"
+)
+SECRET = "SEC0218e8c8744d9e4ea4c7138be7dc2847a7ac4faad039e45d74efa72e96c985cf"
+
 
 ##测试群的消息配置
-WEBHOOK_URL = (
-    "https://oapi.dingtalk.com/robot/send?access_token=15a345d488d062d89a7c17a67e6d6edc4c7ffbe918c3c3ecc0e60647271f192e"
-)
-SECRET = "SEC698f47c3973cc1af8693ae9b7845a2dabdbf397eaf541300b9b4c7c2f569457e"
+# WEBHOOK_URL = (
+#     "https://oapi.dingtalk.com/robot/send?access_token=15a345d488d062d89a7c17a67e6d6edc4c7ffbe918c3c3ecc0e60647271f192e"
+# )
+# SECRET = "SEC698f47c3973cc1af8693ae9b7845a2dabdbf397eaf541300b9b4c7c2f569457e"
 
 # ── 本地 API 配置（通过环境变量覆盖）────────────────────────────────────────
 LOCAL_API_URL = os.environ.get("LOCAL_API_URL", "https://timometric.tipost.com/api/news/push")
 ENABLE_LOCAL_PUSH = os.environ.get("ENABLE_LOCAL_PUSH", "true").lower() == "true"
+
+# ── Tipost Daily Scrape 配置（通过环境变量覆盖）──────────────────────────────
+TIPOST_SCRAPE_URL = os.environ.get(
+    "TIPOST_SCRAPE_URL",
+    "https://agisignal-admin.tipost.com/api/daily/scrape",
+)
+TIPOST_API_KEY = os.environ.get("TIPOST_API_KEY", "AGISIG_PRD_5f7a")
+TIPOST_API_SECRET = os.environ.get("TIPOST_API_SECRET", "sk_live_3c7e8f9a1b2d4e5f6a7b8c9")
+ENABLE_TIPOST_SCRAPE = os.environ.get("ENABLE_TIPOST_SCRAPE", "true").lower() == "true"
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
@@ -62,6 +72,27 @@ def _post_json(url: str, payload: dict, timeout: int = 30) -> dict:
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def _post_json_with_headers(url: str, payload: dict, headers: dict, timeout: int = 30) -> dict:
+    """带自定义 Header 的 POST JSON 请求"""
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req_headers = {"Content-Type": "application/json"}
+    req_headers.update(headers or {})
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers=req_headers,
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = resp.read().decode("utf-8", errors="replace")
+        if not data:
+            return {"success": True}
+        try:
+            return json.loads(data)
+        except Exception:
+            return {"success": True, "raw": data}
 
 
 # ── 核心功能 ──────────────────────────────────────────────────────────────────
@@ -116,6 +147,33 @@ def push_to_local_api(
         return {"success": False, "error": str(e)}
 
 
+def push_to_tipost_scrape(content: str) -> dict:
+    """
+    将 Markdown 内容同步到 Tipost Daily Scrape 接口。
+    失败只记录日志，不影响其它步骤。
+    """
+    if not ENABLE_TIPOST_SCRAPE:
+        print("[tipost] daily/scrape 已禁用（ENABLE_TIPOST_SCRAPE=false）")
+        return {"success": True, "message": "disabled"}
+
+    payload = {"content": content}
+    headers = {
+        "X-API-Key": TIPOST_API_KEY,
+        "X-API-Secret": TIPOST_API_SECRET,
+    }
+    try:
+        result = _post_json_with_headers(TIPOST_SCRAPE_URL, payload, headers=headers)
+        print("[tipost] daily/scrape 同步成功")
+        return result
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        print(f"[tipost] daily/scrape 失败 HTTP {e.code}: {body}")
+        return {"success": False, "error": f"HTTP {e.code}", "body": body}
+    except Exception as e:
+        print(f"[tipost] daily/scrape 同步失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
 # ── 入口 ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -146,14 +204,18 @@ def main():
     print("[step 1] 正在推送到本地数据库...")
     local_result = push_to_local_api(content)
 
-    # Step 2 — 钉钉推送
-    print("[step 2] 正在发送钉钉消息...")
+    # Step 2 — Tipost daily/scrape（失败不中断后续步骤）
+    print("[step 2] 正在同步 Tipost daily/scrape...")
+    tipost_result = push_to_tipost_scrape(content)
+
+    # Step 3 — 钉钉推送
+    print("[step 3] 正在发送钉钉消息...")
     dd_result = send_to_dingtalk("AI新闻早报", content)
 
     if dd_result.get("errcode") == 0:
-        print("[step 2] 钉钉发送成功 ✓")
+        print("[step 3] 钉钉发送成功 ✓")
     else:
-        print(f"[step 2] 钉钉发送失败: {dd_result.get('errmsg')}")
+        print(f"[step 3] 钉钉发送失败: {dd_result.get('errmsg')}")
         sys.exit(1)
 
     print("全部完成 ✓")
