@@ -10,7 +10,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from fetch_gemini_news import fetch_and_format
+from fetch_grok_papers import fetch_and_format
 
 
 def _to_bool(v, default=True):
@@ -35,9 +35,9 @@ def send_via_push_sender(content: str, push_sender_path: str) -> bool:
             timeout=90,
         )
         if result.returncode == 0:
-            print(f"[push] 推送成功\\n{result.stdout.strip()}")
+            print(f"[push] 推送成功\n{result.stdout.strip()}")
             return True
-        print(f"[push] 推送失败(exit={result.returncode})\\n{result.stderr.strip()}")
+        print(f"[push] 推送失败(exit={result.returncode})\n{result.stderr.strip()}")
         return False
     except Exception as e:
         print(f"[push] 调用异常: {e}")
@@ -50,7 +50,6 @@ def execute(params=None):
 
     try:
         fetch_timeout = int(params.get("fetch_timeout", 300))
-        format_timeout = int(params.get("format_timeout", 120))
         push_to_dingtalk = _to_bool(params.get("push_to_dingtalk", True), True)
 
         push_sender_raw = params.get("push_sender", "../../shared/push_sender.py")
@@ -59,28 +58,25 @@ def execute(params=None):
         else:
             push_sender_path = push_sender_raw
 
-        result = fetch_and_format(fetch_timeout=fetch_timeout, format_timeout=format_timeout)
+        result = fetch_and_format(fetch_timeout=fetch_timeout)
         if not result.get("success"):
+            raw_text = (result.get("raw") or "").strip()
+            raw_preview = raw_text[:600] if raw_text else ""
             return {
                 "success": False,
                 "output": result.get("output", "执行失败"),
-                "data": {"pushed": False},
+                "data": {
+                    "pushed": False,
+                    "raw_length": len(raw_text),
+                    "raw_preview": raw_preview,
+                },
             }
 
-        # 调试：打印 raw 前 800 字符，帮助排查 Gemini 输出格式
-        raw = result.get("raw", "")
         output = result["output"]
-        print(f"[debug] raw_length={len(raw)}, output_length={len(output)}")
-        if raw and len(raw) == len(output):
-            # 解析失败（两者相同），打印原始内容片段
-            print(f"[debug] ⚠️ 结构化解析失败，输出前 800 字：\n{raw[:800]}\n---END---")
-        else:
-            print(f"[debug] ✅ 结构化解析成功，条目数估算: {output.count('## ')}")
-
         pushed = False
         if push_to_dingtalk:
             pushed = send_via_push_sender(output, push_sender_path)
-            output += "\\n\\n✅ 已推送" if pushed else "\\n\\n⚠️ 推送失败"
+            output += "\n\n✅ 已推送" if pushed else "\n\n⚠️ 推送失败"
 
         return {
             "success": True,

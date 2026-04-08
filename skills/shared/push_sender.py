@@ -9,6 +9,7 @@ AI新闻推送脚本
 
 import sys
 import time
+import re
 import hmac
 import hashlib
 import base64
@@ -97,20 +98,87 @@ def _post_json_with_headers(url: str, payload: dict, headers: dict, timeout: int
 
 # ── 核心功能 ──────────────────────────────────────────────────────────────────
 
+DINGTALK_MAX_CHARS = 19000  # 钉钉 Markdown 单条限制约 20000，留 1000 余量
+
+
+def _split_content(content: str, max_chars: int = DINGTALK_MAX_CHARS) -> list:
+    """
+    按新闻条目边界分割超长内容，保证每段不超过 max_chars 字符。
+    优先按 '## N.' 标题行切割，避免截断单条新闻。
+    """
+    if len(content) <= max_chars:
+        return [content]
+
+    # 找所有条目起始位置（包括位置0作为第一个边界）
+    boundaries = [0]
+    for m in re.finditer(r"\n(?=##\s*\d+[\.\、])", content):
+        boundaries.append(m.start() + 1)  # +1 跳过 \n
+
+    parts = []
+    seg_start = 0  # 当前段开始位置（在 boundaries 索引意义上）
+    seg_len = 0
+
+    for i in range(len(boundaries)):
+        pos = boundaries[i]
+        next_pos = boundaries[i + 1] if i + 1 < len(boundaries) else len(content)
+        block_len = next_pos - pos
+
+        if seg_len + block_len > max_chars and seg_len > 0:
+            # 先把已积累的内容切出
+            chunk = content[boundaries[seg_start]:pos].strip()
+            if chunk:
+                parts.append(chunk)
+            seg_start = i
+            seg_len = block_len
+        else:
+            seg_len += block_len
+
+    # 最后一段
+    last = content[boundaries[seg_start]:].strip()
+    if last:
+        parts.append(last)
+
+    # 如果某段仍超限（单条正文极长），按字符硬切，保留尽量完整
+    final_parts = []
+    for part in parts:
+        if len(part) <= max_chars:
+            final_parts.append(part)
+        else:
+            for j in range(0, len(part), max_chars):
+                final_parts.append(part[j:j + max_chars])
+
+    return final_parts if final_parts else [content[:max_chars]]
+
+
 def send_to_dingtalk(title: str, content: str) -> dict:
-    """发送 Markdown 格式消息到钉钉机器人"""
-    timestamp, sign = generate_sign()
-    url = f"{WEBHOOK_URL}&timestamp={timestamp}&sign={sign}"
-    payload = {
-        "msgtype": "markdown",
-        "markdown": {"title": title, "text": content},
-    }
-    try:
-        result = _post_json(url, payload)
-        return result
-    except Exception as e:
-        print(f"[dingtalk] 发送失败: {e}")
-        return {"errcode": -1, "errmsg": str(e)}
+    """发送 Markdown 格式消息到钉钉机器人，超长自动分段"""
+    parts = _split_content(content)
+    total = len(parts)
+
+    last_result = {"errcode": 0, "errmsg": "ok"}
+    for idx, part in enumerate(parts, 1):
+        part_title = title if total == 1 else f"{title}（{idx}/{total}）"
+        timestamp, sign = generate_sign()
+        url = f"{WEBHOOK_URL}&timestamp={timestamp}&sign={sign}"
+        payload = {
+            "msgtype": "markdown",
+            "markdown": {"title": part_title, "text": part},
+        }
+        try:
+            result = _post_json(url, payload)
+            last_result = result
+            if result.get("errcode") != 0:
+                print(f"[dingtalk] 第 {idx}/{total} 段发送失败: {result.get('errmsg')}")
+                return result
+            print(f"[dingtalk] 第 {idx}/{total} 段发送成功")
+            if idx < total:
+                import time as _time
+                _time.sleep(1)  # 避免触发频率限制
+        except Exception as e:
+            print(f"[dingtalk] 第 {idx}/{total} 段发送异常: {e}")
+            return {"errcode": -1, "errmsg": str(e)}
+
+    return last_result
 
 
 def push_to_local_api(
