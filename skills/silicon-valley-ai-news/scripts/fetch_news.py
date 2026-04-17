@@ -49,7 +49,7 @@ NEWS_SOURCES = {
     "Cloudflare AI": "https://blog.cloudflare.com/tag/ai/rss/",
     
     # 三级源 - 技术社区
-    "Hacker News AI": "https://hnrss.org/newest?q=AI+OR+LLM+OR+GPT+OR+OpenAI+OR+machine+learning",
+    # "Hacker News AI": "https://hnrss.org/newest?q=AI+OR+LLM+OR+GPT+OR+OpenAI+OR+machine+learning",  # 噪音较多，暂时屏蔽
     "KDnuggets": "https://www.kdnuggets.com/feed",
     "Analytics Vidhya": "https://www.analyticsvidhya.com/feed/",
 }
@@ -724,8 +724,13 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
         for rec in records.values()
         if rec.get("status") in {"sent", "selected"} and rec.get("fingerprint")
     }
-    # 从已有记录中提取已知标题（用于标题相似度去重）
-    known_norm_titles = {_normalize_title(rec.get("title", "")) for rec in records.values() if rec.get("title")}
+    # ⚠️ 标题相似度去重：只用 sent 状态记录（不包括 filtered_time/filtered_ai/overflow）
+    # 原因：filtered_time 的老文章标题也会被纳入，导致新内容被误杀
+    known_norm_titles = {
+        _normalize_title(rec.get("title", ""))
+        for rec in records.values()
+        if rec.get("title") and rec.get("status") in {"sent", "selected"}
+    }
 
     # ── 阶段 1：AI 关键词过滤 ──────────────────────────────────────
     ai_news = filter_ai_news(all_news)
