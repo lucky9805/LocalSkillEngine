@@ -1,6 +1,6 @@
 ---
 name: silicon-valley-ai-news
-description: 实时监控硅谷 AI 领域热门新闻和产品发布，聚合 OpenAI、Google DeepMind、NVIDIA 等 AI 巨头官方博客以及 TechCrunch、Wired 等权威科技媒体，实时推送 AI 行业动态。
+description: 实时监控 AI 领域热门新闻和产品发布，聚合 OpenAI、Google DeepMind、NVIDIA 等 AI 巨头官方博客、TechCrunch/Wired 等权威科技媒体 RSS，以及 AIHOT 实时资讯聚合，推送 AI 行业动态。
 ---
 
 # Silicon Valley AI News
@@ -33,6 +33,9 @@ description: 实时监控硅谷 AI 领域热门新闻和产品发布，聚合 Op
 - KDnuggets: https://www.kdnuggets.com/feed
 - Analytics Vidhya: https://www.analyticsvidhya.com/feed/
 
+### 补充源（AI 资讯聚合）
+- AIHOT: https://aihot.virxact.com/all（~40 条/页，覆盖 X/Twitter、IT之家 RSS、HuggingFace 论文、DataGuidance 政策等实时 AI 动态）
+
 ## 参数
 
 - `top_n` (可选): 返回前 N 条新闻，默认 `10`
@@ -46,7 +49,7 @@ description: 实时监控硅谷 AI 领域热门新闻和产品发布，聚合 Op
 
 ## 执行流程
 
-1. **扫描新闻**：并行获取所有 RSS 源
+1. **扫描新闻**：并行获取所有 RSS 源 + AIHOT 聚合源
 2. **AI 筛选**：根据关键词筛选 AI 相关新闻
 3. **时间过滤**：只保留最近 N 小时的新闻（`hours` 参数）
 4. **去重检查**：读取 `sent_file`，过滤已发送的（如配置）

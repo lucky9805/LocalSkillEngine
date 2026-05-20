@@ -26,6 +26,10 @@ DEFAULT_TOP_N = 10
 DEFAULT_HOURS = 24
 DEFAULT_TRANSLATE = True  # 默认翻译成中文
 
+# AIHOT 数据源
+AIHOT_URL = "https://aihot.virxact.com/all"
+AIHOT_ENABLED = True  # 是否启用 AIHOT 数据源
+
 # 新闻源配置
 NEWS_SOURCES = {
     # 一级源 - AI巨头官方
@@ -81,6 +85,227 @@ def fetch_url(url, timeout=15, retries=2):
             # 轻量退避，降低瞬时波动带来的漏抓
             time.sleep(0.6 * (attempt + 1))
     return None
+
+
+# ── AIHOT 数据源 ─────────────────────────────────────────────────────────────
+
+def _unescape_rsc_field(s: str) -> str:
+    """将 RSC payload 中的转义字段还原为普通文本"""
+    s = s.replace("\\\\n", " ").replace("\\" + '"', '"')
+    return s.strip()
+
+
+def fetch_aihot_html() -> str:
+    """抓取 aihot.virxact.com/all 页面 HTML"""
+    req = urllib.request.Request(AIHOT_URL, headers={
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    })
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return r.read().decode("utf-8", errors="replace")
+
+
+def fetch_aihot_items(llm_provider=None) -> list:
+    """
+    从 aihot.virxact.com/all 抓取并解析 AI 新闻条目。
+    数据嵌入在 Next.js RSC payload 中。
+    
+    Args:
+        llm_provider: LLM provider 实例，用于智能过滤（None 则用关键词兜底）
+    
+    Returns:
+        list: 标准格式新闻条目，每项含 title/link/date/description/source
+    """
+    items = []
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    try:
+        html = fetch_aihot_html()
+    except Exception as e:
+        print(f"[AIHOT] 抓取失败: {e}")
+        return items
+
+    chunks = re.findall(r'self\.__next_f\.push\(\[1,"(.*?)"\]\)', html, re.S)
+    if not chunks:
+        print("[AIHOT] 未找到 RSC 数据")
+        return items
+
+    for chunk in chunks:
+        if '"items":[' not in chunk and '\\"items\\":[{' not in chunk:
+            continue
+
+        pattern = re.compile(r'\{\\"id\\":\\"([^\\]+)\\",\\"url\\":\\"([^\\]+)\\"')
+        matches = list(pattern.finditer(chunk))
+        if not matches:
+            continue
+
+        for m in matches:
+            url = m.group(2)
+            rest = chunk[m.end():m.end() + 3000]
+
+            # title（优先 titleZh）
+            title_m = re.search(r'\\"titleZh\\":\\"(.*?)\\"', rest)
+            title = _unescape_rsc_field(title_m.group(1)) if title_m else ""
+            if not title:
+                title_m = re.search(r'\\"title\\":\\"(.*?)\\"', rest)
+                title = _unescape_rsc_field(title_m.group(1)) if title_m else ""
+
+            # 摘要
+            summary_m = re.search(r'\\"summaryZh\\":\\"(.*?)\\"', rest)
+            description = _unescape_rsc_field(summary_m.group(1)) if summary_m else ""
+            if len(description) > 200:
+                description = description[:200] + "..."
+
+            # 来源
+            source_m = re.search(r'\\"source\\":\{[^}]*\\"name\\":\\"(.*?)\\"', rest)
+            source = source_m.group(1) if source_m else ""
+
+            # 发布时间（ISO 8601）
+            pub_m = re.search(r'\\"publishedAt\\":\\"([^"\\]+)\\"', rest)
+            date_str = pub_m.group(1) if pub_m else ""
+
+            if not title or not url:
+                continue
+
+            items.append({
+                "title": title,
+                "link": url,
+                "date": date_str,  # ISO 8601, 兼容现有时间过滤
+                "description": description,
+                "source": f"AIHOT·{source}" if source else "AIHOT",
+                "_from": "aihot",
+            })
+
+        break
+
+    # ── 智能过滤：区分海外/国内 AI 内容 ──────────────────────────
+    items = _filter_overseas_ai(items, llm_provider)
+    return items
+
+
+# ── LLM 智能过滤 ──────────────────────────────────────────────────────────────
+
+_AIHOT_FILTER_PROMPT = """你是一个 AI 新闻分类助手。你的任务是判断给定的 AI 新闻条目是否属于"海外/国际 AI 内容"，应该出现在硅谷 AI 动态中。
+
+判断标准：
+- ✅ 保留：主题涉及海外 AI 公司/研究机构/人物/产品/技术进展
+  （如 OpenAI、Anthropic、Google DeepMind、Meta AI、xAI、Mistral、NVIDIA、
+  Microsoft、Amazon、Perplexity、Cursor、Replit 等，不限上述列举）
+- ✅ 保留：国际 AI 学术研究（arXiv 论文）、大模型技术突破
+- ✅ 保留：AI 政策法规（来自欧盟/美国/新加坡/国际组织）
+- ✅ 保留：海外 AI 大佬/专家/投资人的观点（Amodei、Altman、Andreessen 等，不限列举）
+- ✅ 保留：即使文章来源是中国媒体（IT之家等），只要内容主体是报道海外 AI 动态也保留
+- ❌ 过滤：主题是中国本土 AI 公司/产品的公告/发布/合作
+  （百度、阿里、腾讯、华为、字节、DeepSeek、Kimi、智谱、文心、通义、MiniMax 等）
+- ❌ 过滤：中国国内汽车厂商的 AI 合作/产品发布
+- ❌ 过滤：中国政府的 AI 政策/指南/标准
+- ❌ 过滤：中国本土 AI 博主的非海外内容
+
+回复格式：仅输出编号和 Y/N，每行一条，例如：
+0: Y
+1: N
+2: Y
+不要输出任何解释。"""
+
+
+def _filter_overseas_ai(items: list, llm_provider=None) -> list:
+    """
+    智能过滤：用 LLM 判断每条是否属于海外/国际 AI 内容。
+    LLM 不可用时降级为关键词兜底。
+    """
+    if not items:
+        return items
+
+    if llm_provider:
+        try:
+            result = _llm_filter(items, llm_provider)
+            if result is not None:
+                return result
+        except Exception as e:
+            print(f"[AIHOT] LLM 过滤失败: {e}，降级到关键词")
+
+    return _keyword_filter_fallback(items)
+
+
+def _llm_filter(items: list, llm_provider) -> list:
+    """LLM 批量分类，一次调用搞定"""
+    from skill_service.llm.provider import LLMMessage
+
+    lines = []
+    for i, item in enumerate(items):
+        title = item.get("title", "")
+        source = item.get("source", "")
+        desc = (item.get("description", "") or "")[:100]
+        text = f"{i}: 【{source}】{title}"
+        if desc:
+            text += f"（{desc}）"
+        lines.append(text)
+
+    user_content = "\n".join(lines)
+    messages = [
+        LLMMessage(role="system", content=_AIHOT_FILTER_PROMPT),
+        LLMMessage(role="user", content=user_content),
+    ]
+
+    response = _run_async(llm_provider.chat(messages, max_tokens=512))
+    if not (response and response.content):
+        print("[AIHOT] LLM 无响应，降级到关键词")
+        return None
+
+    decisions = {}
+    for line in response.content.strip().splitlines():
+        m = re.match(r'^(\d+)\s*[:：]\s*([YyNn])', line.strip())
+        if m:
+            decisions[int(m.group(1))] = m.group(2).upper() == "Y"
+
+    if not decisions:
+        print(f"[AIHOT] LLM 解析失败，响应: {response.content[:150]}")
+        return None
+
+    kept = [item for i, item in enumerate(items) if decisions.get(i, False)]
+    skipped = len(items) - len(kept)
+    print(f"[AIHOT] LLM 过滤：{len(items)} → {len(kept)} 条（过滤 {skipped} 条）")
+    return kept
+
+
+def _keyword_filter_fallback(items: list) -> list:
+    """关键词兜底过滤（LLM 不可用时），尽力而为"""
+    domestic_kw = [
+        "百度", "阿里云", "阿里巴巴", "腾讯云", "腾讯", "华为乾崑", "华为鸿蒙",
+        "字节跳动", "DeepSeek", "Kimi", "智谱", "讯飞", "月之暗面", "零一万物",
+        "MiniMax", "小米汽车", "小米", "广汽", "东风奕派", "比亚迪",
+        "文心一言", "文心", "通义千问", "通义", "Qwen", "混元",
+        "紫东太初", "百川", "钉钉AI", "豆包", "可灵", "即梦",
+        "国家网络安全标准化", "国家网安标委", "网信办", "工信部",
+    ]
+    overseas_hint_kw = [
+        "OpenAI", "Anthropic", "Claude", "Gemini", "Grok", "GPT",
+        "NVIDIA", "英伟达", "DeepMind", "Meta", "Llama", "xAI", "Mistral",
+        "Copilot", "AWS", "Google", "微软", "Waymo", "Amodei", "Altman",
+        "新加坡", "欧盟", "美国", "加州", "硅谷",
+    ]
+    domestic_source_kw = ["阿里云", "Alibaba Cloud"]
+
+    def _is_domestic(title: str, source: str) -> bool:
+        if any(kw in source for kw in domestic_source_kw):
+            return True
+        has_domestic = any(kw in title for kw in domestic_kw)
+        if not has_domestic:
+            return False
+        has_overseas = any(kw in title for kw in overseas_hint_kw)
+        return not has_overseas
+
+    kept = []
+    skipped = 0
+    for item in items:
+        if _is_domestic(item.get("title", ""), item.get("source", "")):
+            skipped += 1
+        else:
+            kept.append(item)
+
+    if skipped:
+        print(f"[AIHOT] 关键词兜底过滤 {skipped} 条，保留 {len(kept)} 条")
+    return kept
 
 
 def _strip_ns(tag):
@@ -673,12 +898,14 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
         }
     """
     print(f"[{datetime.now().isoformat()}] 开始扫描AI新闻...")
-    print(f"共 {len(NEWS_SOURCES)} 个新闻源")
-    
+    print(f"共 {len(NEWS_SOURCES)} 个 RSS 新闻源 + AIHOT")
+
     all_news = []
-    
+    aihot_count = 0
+
     # 并行获取所有新闻源
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
+        # RSS 源
         futures = {
             executor.submit(
                 fetch_url,
@@ -688,7 +915,10 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
             ): name
             for name, url in NEWS_SOURCES.items()
         }
-        
+
+        # AIHOT 数据源
+        aihot_future = executor.submit(fetch_aihot_items, llm_provider) if AIHOT_ENABLED else None
+
         for future in concurrent.futures.as_completed(futures):
             name = futures[future]
             try:
@@ -702,8 +932,21 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
                         print(f"  - {name}: 0 条 (无数据)")
             except Exception as e:
                 print(f"  ✗ {name}: {e}")
+
+        # 处理 AIHOT 结果
+        if aihot_future:
+            try:
+                aihot_items = aihot_future.result()
+                if aihot_items:
+                    all_news.extend(aihot_items)
+                    aihot_count = len(aihot_items)
+                    print(f"  ✓ AIHOT: {aihot_count} 条")
+                else:
+                    print(f"  - AIHOT: 0 条")
+            except Exception as e:
+                print(f"  ✗ AIHOT: {e}")
     
-    print(f"\n共获取 {len(all_news)} 条新闻")
+    print(f"\n共获取 {len(all_news)} 条新闻（RSS {len(all_news) - aihot_count} + AIHOT {aihot_count}）")
 
     # 统一规范化链接（尤其是 Hacker News 条目），保证后续去重键一致
     all_news = [_normalize_hn_link(item) for item in all_news]
@@ -802,15 +1045,34 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
                 "ai_related": len(ai_news),
                 "recent": len(recent_news),
                 "new": 0,
-                "selected": 0
+                "selected": 0,
+                "aihot": aihot_count,
             }
         }
     
     # ── 阶段 4：排序 ──────────────────────────────────────────────
     priority = {k: i for i, k in enumerate(NEWS_SOURCES.keys())}
-    
+
+    def _get_priority(source: str) -> int:
+        """
+        动态排序优先级：
+        - AIHOT·X（Twitter 专家实时观点）→ 最高
+        - AIHOT·其他聚合源 → 高
+        - 科技媒体 → 中
+        - 官方博客（OpenAI/Google 等）→ 低（没有重大新闻时靠后）
+        """
+        if source.startswith("AIHOT·X："):
+            return 1   # Twitter 专家观点 — 最高
+        if source.startswith("AIHOT·"):
+            return 4   # 其他 AIHOT 聚合源
+        base = priority.get(source, 999)
+        # 官方博客降权：OpenAI/Google/DeepMind 等平时排到科技媒体之后
+        if base <= 6:
+            return base + 10  # 10-16，与 MIT News / IEEE Spectrum 同级或更低
+        return base
+
     def sort_key(item):
-        src_prio = priority.get(item['source'], 999)
+        src_prio = _get_priority(item['source'])
         try:
             dt = _parse_news_datetime(item.get('date', ''))
             if dt:
@@ -822,10 +1084,25 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
         return (src_prio, 0)
     
     new_news.sort(key=sort_key)
-    
-    # ── 阶段 5：top_n 截断，overflow 记录 ────────────────────────
-    selected = new_news[:top_n]
-    overflow = new_news[top_n:]
+
+    # ── 阶段 5：top_n 截断 + AIHOT 比例上限 ────────────────────
+    # AIHOT 数据量远超 RSS，限制其占比不超过 60%，保持来源多样性
+    MAX_AIHOT_RATIO = 0.6
+    max_aihot_allowed = max(1, int(top_n * MAX_AIHOT_RATIO))
+
+    selected = []
+    aihot_in_selected = 0
+    for item in new_news:
+        is_aihot = item.get('_from') == 'aihot'
+        if is_aihot:
+            if aihot_in_selected >= max_aihot_allowed:
+                continue  # AIHOT 已达上限，跳过让 RSS 进入
+            aihot_in_selected += 1
+        selected.append(item)
+        if len(selected) >= top_n:
+            break
+
+    overflow = [item for item in new_news if item not in selected]
 
     if sent_file and overflow:
         for item in overflow:
@@ -872,14 +1149,19 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
         desc = news.get('description', '')
         date_str = news.get('date', '')
         link = news.get('link', '')
+        source = news.get('source', '未知来源')
         
         beijing_time = convert_to_beijing_time(date_str) if date_str else '未知时间'
         
         output += f"## {i}.{title}\n"
         output += f"**摘要**：{desc if desc else '暂无'}\n\n"
         output += f"**时间**：{beijing_time}\n\n"
-        output += f"**来源**：{news.get('source', '未知来源')}\n\n"
+        output += f"**来源**：{source}\n\n"
         output += f"**链接**：[{link}]({link})\n\n"
+
+    # 添加统计信息
+    if aihot_count:
+        output += f"\n> 共扫描 {len(NEWS_SOURCES)} 个 RSS 源 + AIHOT（{aihot_count} 条）"
     
     # ── 返回结果（不在这里标记 sent，由调用方发送成功后手动标记）────
     # 返回完整的 selected 新闻列表，供发送成功后标记 sent 使用
@@ -908,7 +1190,8 @@ def fetch_and_format(top_n=DEFAULT_TOP_N, hours=DEFAULT_HOURS, sent_file=None, t
             "ai_related": len(ai_news),
             "recent": len(recent_news),
             "new": len(new_news),
-            "selected": len(selected)
+            "selected": len(selected),
+            "aihot": aihot_count,
         },
         "selected_for_mark": selected_for_mark  # 供外部标记 sent 使用
     }
