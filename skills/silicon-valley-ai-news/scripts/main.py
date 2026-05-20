@@ -15,7 +15,7 @@ from skill_service.llm.provider import LLMProvider
 SCRIPT_DIR = Path(__file__).parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from fetch_news import fetch_and_format, mark_as_sent
+from fetch_news import fetch_and_format
 
 
 def send_to_dingtalk(content: str, push_sender_path: str = None) -> bool:
@@ -38,7 +38,7 @@ def send_to_dingtalk(content: str, push_sender_path: str = None) -> bool:
             input=content,
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=60
         )
 
         if result.returncode == 0:
@@ -78,8 +78,8 @@ def execute(params=None):
         # 解析参数
         top_n = int(params.get("top_n", 10))
         hours = int(params.get("hours", 24))
-        translate = params.get("translate", True)
-        push_to_dingtalk = params.get("push_to_dingtalk", False)
+        translate = str(params.get("translate", "true")).lower() != "false"
+        push_to_dingtalk = str(params.get("push_to_dingtalk", "false")).lower() == "true"
         
         # 创建 LLM provider（用于翻译）
         llm_provider = None
@@ -124,10 +124,6 @@ def execute(params=None):
         if result.get("success") and push_to_dingtalk and result.get("output"):
             if send_to_dingtalk(result["output"], push_sender_path):
                 result["output"] += "\n\n✅ 已推送到钉钉"
-                # 发送成功后，标记为 sent
-                selected_for_mark = result.get("selected_for_mark", [])
-                if selected_for_mark:
-                    mark_as_sent(selected_for_mark, sent_file)
             else:
                 result["output"] += "\n\n⚠️ 推送钉钉失败（请检查 push_sender.py 配置）"
         
