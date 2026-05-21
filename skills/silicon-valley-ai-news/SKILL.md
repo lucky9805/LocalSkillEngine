@@ -1,6 +1,6 @@
 ---
 name: silicon-valley-ai-news
-description: 实时监控硅谷 AI 领域热门新闻和产品发布，聚合 RSS 官方/媒体源 + AIHOT 补充源，覆盖 AI 巨头官方博客、权威科技媒体、Twitter 专家观点等，实时推送 AI 行业动态。
+description: 实时监控硅谷 AI 领域热门新闻和产品发布，聚合 OpenAI、Google DeepMind、NVIDIA 等 AI 巨头官方博客以及 TechCrunch、Wired 等权威科技媒体，实时推送 AI 行业动态。
 ---
 
 # Silicon Valley AI News
@@ -33,21 +33,6 @@ description: 实时监控硅谷 AI 领域热门新闻和产品发布，聚合 RS
 - KDnuggets: https://www.kdnuggets.com/feed
 - Analytics Vidhya: https://www.analyticsvidhya.com/feed/
 
-### 补充源（AIHOT）
-- AIHOT: https://aihot.virxact.com/all
-  - 聚合 X（Twitter）AI 专家观点、RSS 新闻、论文等
-  - 来源标记：`AIHOT·X：{author}`（Twitter）、`AIHOT·{source_name}`（其他）
-  - 自动 LLM 过滤：仅保留海外 AI 相关，排除中国本土内容
-  - AIHOT 条目最多占输出总数的 60%
-
-## 优先级排序
-
-1. **AIHOT·X**（Twitter 专家观点）— 最高优先
-2. **二级科技媒体**（TechCrunch、Wired 等）
-3. **AIHOT 其他来源**（RSS/论文/网页聚合）
-4. **三级技术社区**
-5. **一级官方博客**（OpenAI/Google/DeepMind 等）— 降权，无重大新闻时不占位
-
 ## 参数
 
 - `top_n` (可选): 返回前 N 条新闻，默认 `10`
@@ -55,41 +40,32 @@ description: 实时监控硅谷 AI 领域热门新闻和产品发布，聚合 RS
 - `sent_file` (可选): 已发送新闻记录文件路径（相对路径），默认 `memory/sent.json`（自动开启去重）
   - 设置为空字符串 `""` 可以禁用去重，每次返回所有新闻
 - `translate` (可选): 是否翻译成中文，默认 `true`（需要 LLM 支持）
-- `model` (可选): 指定 LLM 模型（用于翻译和 AIHOT 过滤），默认使用系统默认模型
+- `model` (可选): 指定 LLM 模型（用于翻译），默认使用系统默认模型
 - `push_to_dingtalk` (可选): 是否推送到钉钉，默认 `false`
 - `push_sender` (可选): push_sender.py 脚本路径（相对路径），默认 `../../shared/push_sender.py`（共享脚本）
 
 ## 执行流程
 
-1. **并行抓取**：RSS 源 + AIHOT 补充源同时获取
-2. **AIHOT 过滤**：LLM 智能判断海外 AI 相关（降级到关键词兜底）
-3. **URL 去重**：AIHOT 与 RSS 之间 URL 去重
-4. **AI 筛选**：RSS 条目根据关键词筛选 AI 相关新闻
-5. **时间过滤**：只保留最近 N 小时的新闻
-6. **去重检查**：读取 `sent_file`，过滤已发送/已选中的
-7. **标题相似度去重**：同一新闻多来源报道
-8. **优先级排序**：按来源优先级和时间排序
-9. **AIHOT 比例限制**：AIHOT 最多占 60%
-10. **翻译**：RSS 条目标题和摘要翻译成中文（AIHOT 已是中文，跳过）
-11. **生成摘要**：为缺少摘要的新闻生成一句话摘要
-12. **输出结果**：返回 Markdown 格式的新闻列表
+1. **扫描新闻**：并行获取所有 RSS 源
+2. **AI 筛选**：根据关键词筛选 AI 相关新闻
+3. **时间过滤**：只保留最近 N 小时的新闻（`hours` 参数）
+4. **去重检查**：读取 `sent_file`，过滤已发送的（如配置）
+5. **优先级排序**：按来源优先级和时间排序
+6. **翻译**：将标题和摘要翻译成中文（`translate` 参数，需要 LLM）
+7. **输出结果**：返回 Markdown 格式的新闻列表
 
 ## 输出格式
 
 ```
 ## 🤖 硅谷AI最新动态
 
-## 1.标题
+### 1. 标题
 **摘要**：xxx
 **时间**：2026年2月25日 xx:xx (北京时间)
-**来源**：AIHOT·X：swyx
-**链接**：[https://xxx](https://xxx)
+**来源**：OpenAI
+**链接地址**：[https://xxx](https://xxx)
 
-## 2.标题
-**摘要**：xxx
-**时间**：2026年2月25日 xx:xx (北京时间)
-**来源**：TechCrunch AI
-**链接**：[https://xxx](https://xxx)
+---
 ```
 
 ## 使用示例
@@ -120,4 +96,3 @@ skill-service run silicon-valley-ai-news --param sent_file=cache/news.json
 > **注意**：
 > - 去重已默认开启，无需手动配置 `sent_file` 参数
 > - 钉钉推送需要 `../../shared/push_sender.py` 配置好 WEBHOOK_URL 和 SECRET
-> - AIHOT 过滤需要 LLM 支持，无 LLM 时自动降级到关键词过滤

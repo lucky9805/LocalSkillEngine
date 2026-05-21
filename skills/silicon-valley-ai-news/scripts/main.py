@@ -38,7 +38,7 @@ def send_to_dingtalk(content: str, push_sender_path: str = None) -> bool:
             input=content,
             capture_output=True,
             text=True,
-            timeout=60
+            timeout=30
         )
 
         if result.returncode == 0:
@@ -78,8 +78,8 @@ def execute(params=None):
         # 解析参数
         top_n = int(params.get("top_n", 10))
         hours = int(params.get("hours", 24))
-        translate = str(params.get("translate", "true")).lower() != "false"
-        push_to_dingtalk = str(params.get("push_to_dingtalk", "false")).lower() == "true"
+        translate = params.get("translate", True)
+        push_to_dingtalk = params.get("push_to_dingtalk", False)
         
         # 创建 LLM provider（用于翻译）
         llm_provider = None
